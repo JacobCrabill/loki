@@ -34,21 +34,13 @@ pub const Index = struct {
         self.entries.deinit(self.allocator);
     }
 
-    /// Read the index from `dir`. Returns an empty index if the file is absent.
-    pub fn read(allocator: std.mem.Allocator, dir: std.fs.Dir) !Index {
+    /// Parse an index from already-loaded bytes (the PZMIDX binary format).
+    /// Used by the database layer so it can decrypt before parsing.
+    pub fn fromBytes(allocator: std.mem.Allocator, bytes: []const u8) !Index {
         var idx = Index.init(allocator);
         errdefer idx.deinit();
 
-        const file = dir.openFile("index", .{}) catch |err| {
-            if (err == error.FileNotFound) return idx;
-            return err;
-        };
-        defer file.close();
-
-        const content = try file.readToEndAlloc(allocator, 16 * 1024 * 1024);
-        defer allocator.free(content);
-
-        var stream = std.io.fixedBufferStream(content);
+        var stream = std.io.fixedBufferStream(bytes);
         const r = stream.reader();
 
         var magic: [8]u8 = undefined;
@@ -80,22 +72,36 @@ pub const Index = struct {
         return idx;
     }
 
-    /// Write the index to `dir`, overwriting any existing file.
+    /// Serialize the index to `writer` in PZMIDX binary format.
+    /// Used by the database layer so it can encrypt after serializing.
+    pub fn writeTo(self: *const Index, writer: anytype) !void {
+        try writer.writeAll(MAGIC);
+        try writer.writeInt(u32, @intCast(self.entries.items.len), .little);
+        for (self.entries.items) |e| {
+            try writer.writeAll(&e.entry_id);
+            try writer.writeAll(&e.head_hash);
+            try writer.writeInt(u16, @intCast(e.title.len), .little);
+            try writer.writeAll(e.title);
+        }
+    }
+
+    /// Read the index from `dir/index`. Returns an empty index if absent.
+    pub fn read(allocator: std.mem.Allocator, dir: std.fs.Dir) !Index {
+        const file = dir.openFile("index", .{}) catch |err| {
+            if (err == error.FileNotFound) return Index.init(allocator);
+            return err;
+        };
+        defer file.close();
+        const content = try file.readToEndAlloc(allocator, 16 * 1024 * 1024);
+        defer allocator.free(content);
+        return fromBytes(allocator, content);
+    }
+
+    /// Write the index to `dir/index` in plaintext (unencrypted databases).
     pub fn write(self: *const Index, dir: std.fs.Dir) !void {
         var buf: std.ArrayList(u8) = .{};
         defer buf.deinit(self.allocator);
-
-        const w = buf.writer(self.allocator);
-        try w.writeAll(MAGIC);
-        try w.writeInt(u32, @intCast(self.entries.items.len), .little);
-
-        for (self.entries.items) |e| {
-            try w.writeAll(&e.entry_id);
-            try w.writeAll(&e.head_hash);
-            try w.writeInt(u16, @intCast(e.title.len), .little);
-            try w.writeAll(e.title);
-        }
-
+        try self.writeTo(buf.writer(self.allocator));
         const file = try dir.createFile("index", .{});
         defer file.close();
         try file.writeAll(buf.items);

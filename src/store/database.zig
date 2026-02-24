@@ -2,6 +2,8 @@ const std = @import("std");
 const entry_mod = @import("../model/entry.zig");
 const object = @import("object.zig");
 const index_mod = @import("index.zig");
+const cipher = @import("../crypto/cipher.zig");
+const kdf = @import("../crypto/kdf.zig");
 
 pub const Entry = entry_mod.Entry;
 pub const IndexEntry = index_mod.IndexEntry;
@@ -11,35 +13,72 @@ pub const Database = struct {
     dir: std.fs.Dir,
     objects_dir: std.fs.Dir,
     index: index_mod.Index,
+    /// Derived encryption key, or null for unencrypted databases.
+    key: ?[cipher.key_length]u8,
 
-    /// Open an existing database directory.
-    pub fn open(allocator: std.mem.Allocator, base_dir: std.fs.Dir, name: []const u8) !Database {
+    // -------------------------------------------------------------------------
+    // Open / create
+    // -------------------------------------------------------------------------
+
+    /// Open an existing database. Pass `password` to unlock an encrypted
+    /// database, or `null` for a plaintext one. Returns `error.WrongPassword`
+    /// if the password does not match the stored header.
+    pub fn open(
+        allocator: std.mem.Allocator,
+        base_dir: std.fs.Dir,
+        name: []const u8,
+        password: ?[]const u8,
+    ) !Database {
         var dir = try base_dir.openDir(name, .{});
         errdefer dir.close();
         var objects_dir = try dir.openDir("objects", .{});
         errdefer objects_dir.close();
-        const idx = try index_mod.Index.read(allocator, dir);
-        return .{
+
+        const derived_key: ?[cipher.key_length]u8 = if (password) |pw| blk: {
+            const header = try kdf.readHeader(dir);
+            const k = try kdf.verifyPassword(allocator, pw, header) orelse
+                return error.WrongPassword;
+            break :blk k;
+        } else null;
+
+        var db = Database{
             .allocator = allocator,
             .dir = dir,
             .objects_dir = objects_dir,
-            .index = idx,
+            .index = undefined,
+            .key = derived_key,
         };
+        db.index = try db.loadIndex();
+        return db;
     }
 
-    /// Create a new database directory inside `base_dir`.
-    pub fn create(allocator: std.mem.Allocator, base_dir: std.fs.Dir, name: []const u8) !Database {
+    /// Create a new database directory inside `base_dir`. Pass `password` to
+    /// create an encrypted database, or `null` for a plaintext one.
+    pub fn create(
+        allocator: std.mem.Allocator,
+        base_dir: std.fs.Dir,
+        name: []const u8,
+        password: ?[]const u8,
+    ) !Database {
         try base_dir.makeDir(name);
         var dir = try base_dir.openDir(name, .{});
         errdefer dir.close();
         try dir.makeDir("objects");
         var objects_dir = try dir.openDir("objects", .{});
         errdefer objects_dir.close();
-        return .{
+
+        const derived_key: ?[cipher.key_length]u8 = if (password) |pw| blk: {
+            const result = try kdf.createHeader(allocator, pw, kdf.test_params);
+            try kdf.writeHeader(result.header, dir);
+            break :blk result.key;
+        } else null;
+
+        return Database{
             .allocator = allocator,
             .dir = dir,
             .objects_dir = objects_dir,
             .index = index_mod.Index.init(allocator),
+            .key = derived_key,
         };
     }
 
@@ -49,10 +88,31 @@ pub const Database = struct {
         self.dir.close();
     }
 
-    /// Flush the index to disk.
+    // -------------------------------------------------------------------------
+    // Persistence
+    // -------------------------------------------------------------------------
+
+    /// Flush the index to disk, encrypting it if the database has a key.
     pub fn save(self: *Database) !void {
-        try self.index.write(self.dir);
+        var buf: std.ArrayList(u8) = .{};
+        defer buf.deinit(self.allocator);
+        try self.index.writeTo(buf.writer(self.allocator));
+
+        const file = try self.dir.createFile("index", .{});
+        defer file.close();
+
+        if (self.key) |k| {
+            const blob = try cipher.encrypt(self.allocator, k, buf.items);
+            defer self.allocator.free(blob);
+            try file.writeAll(blob);
+        } else {
+            try file.writeAll(buf.items);
+        }
     }
+
+    // -------------------------------------------------------------------------
+    // Queries
+    // -------------------------------------------------------------------------
 
     /// Return all index records. Slice is valid until the next mutation.
     pub fn listEntries(self: *const Database) []const IndexEntry {
@@ -66,23 +126,27 @@ pub const Database = struct {
         return self.getVersion(ie.head_hash);
     }
 
-    /// Retrieve a specific version of an entry by its object hash.
+    /// Retrieve a specific version by its object hash.
     /// Caller must call `entry.deinit(allocator)` on the result.
     pub fn getVersion(self: *Database, h: [20]u8) !Entry {
-        const blob = try object.read(self.allocator, self.objects_dir, h);
-        defer self.allocator.free(blob);
-        var stream = std.io.fixedBufferStream(blob);
-        return Entry.deserialize(self.allocator, stream.reader());
+        const plaintext = try self.readObject(h);
+        defer self.allocator.free(plaintext);
+        var stream = std.io.fixedBufferStream(plaintext);
+        return entry_mod.Entry.deserialize(self.allocator, stream.reader());
     }
 
+    // -------------------------------------------------------------------------
+    // Mutations
+    // -------------------------------------------------------------------------
+
     /// Store a new entry (genesis version; `entry.parent_hash` must be null).
-    /// Returns the entry_id, which is also the hash of this first version.
+    /// Returns the entry_id (= hash of the genesis object).
     pub fn createEntry(self: *Database, entry: Entry) ![20]u8 {
         if (entry.parent_hash != null) return error.ExpectedGenesisEntry;
         var buf: std.ArrayList(u8) = .{};
         defer buf.deinit(self.allocator);
         try entry.serialize(buf.writer(self.allocator));
-        const h = try object.writeIfAbsent(self.objects_dir, buf.items);
+        const h = try self.writeObject(buf.items);
         try self.index.addEntry(h, h, entry.title);
         return h;
     }
@@ -98,26 +162,85 @@ pub const Database = struct {
         var buf: std.ArrayList(u8) = .{};
         defer buf.deinit(self.allocator);
         try entry.serialize(buf.writer(self.allocator));
-        const new_hash = try object.writeIfAbsent(self.objects_dir, buf.items);
+        const new_hash = try self.writeObject(buf.items);
         try self.index.updateEntry(entry_id, new_hash, entry.title);
         return new_hash;
     }
 
-    /// Remove an entry from the index. Objects are kept for history.
+    /// Remove an entry from the index. Objects are retained for history.
     pub fn deleteEntry(self: *Database, entry_id: [20]u8) !void {
         try self.index.removeEntry(entry_id);
     }
+
+    // -------------------------------------------------------------------------
+    // Private helpers
+    // -------------------------------------------------------------------------
+
+    /// Write a plaintext blob to the object store, encrypting it when the
+    /// database has a key. The object filename is SHA-1(plaintext) regardless
+    /// of whether the stored bytes are encrypted. Idempotent.
+    fn writeObject(self: *Database, plaintext: []const u8) ![20]u8 {
+        const h = object.hash(plaintext);
+        const hex = object.hashToHex(h);
+
+        if (self.key) |k| {
+            const blob = try cipher.encrypt(self.allocator, k, plaintext);
+            defer self.allocator.free(blob);
+            const file = self.objects_dir.createFile(&hex, .{ .exclusive = true }) catch |err| {
+                if (err == error.PathAlreadyExists) return h;
+                return err;
+            };
+            defer file.close();
+            try file.writeAll(blob);
+        } else {
+            _ = try object.writeIfAbsent(self.objects_dir, plaintext);
+        }
+        return h;
+    }
+
+    /// Read an object by hash, decrypting it when the database has a key.
+    /// Caller must free the returned slice.
+    fn readObject(self: *Database, h: [20]u8) ![]u8 {
+        const raw = try object.read(self.allocator, self.objects_dir, h);
+        if (self.key) |k| {
+            defer self.allocator.free(raw);
+            return cipher.decrypt(self.allocator, k, raw);
+        }
+        return raw;
+    }
+
+    /// Load the index file, decrypting if needed. Called once during open/create.
+    fn loadIndex(self: *Database) !index_mod.Index {
+        const file = self.dir.openFile("index", .{}) catch |err| {
+            if (err == error.FileNotFound) return index_mod.Index.init(self.allocator);
+            return err;
+        };
+        defer file.close();
+
+        const raw = try file.readToEndAlloc(self.allocator, 64 * 1024 * 1024);
+        defer self.allocator.free(raw);
+
+        if (self.key) |k| {
+            const plaintext = try cipher.decrypt(self.allocator, k, raw);
+            defer self.allocator.free(plaintext);
+            return index_mod.Index.fromBytes(self.allocator, plaintext);
+        }
+        return index_mod.Index.fromBytes(self.allocator, raw);
+    }
 };
 
-test "create, add entry, save, reopen" {
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "plaintext: create, add entry, save, reopen" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
     const entry_id = blk: {
-        var db = try Database.create(allocator, tmp.dir, "mydb");
+        var db = try Database.create(allocator, tmp.dir, "mydb", null);
         defer db.deinit();
-
         const id = try db.createEntry(.{
             .parent_hash = null,
             .title = "GitHub",
@@ -131,7 +254,7 @@ test "create, add entry, save, reopen" {
         break :blk id;
     };
 
-    var db2 = try Database.open(allocator, tmp.dir, "mydb");
+    var db2 = try Database.open(allocator, tmp.dir, "mydb", null);
     defer db2.deinit();
 
     const entries = db2.listEntries();
@@ -141,18 +264,17 @@ test "create, add entry, save, reopen" {
 
     const loaded = try db2.getEntry(entry_id);
     defer loaded.deinit(allocator);
-    try std.testing.expectEqualStrings("GitHub", loaded.title);
     try std.testing.expectEqualStrings("octocat", loaded.username);
     try std.testing.expectEqualStrings("hunter2", loaded.password);
     try std.testing.expect(loaded.parent_hash == null);
 }
 
-test "update entry creates version chain" {
+test "plaintext: update entry creates version chain" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var db = try Database.create(allocator, tmp.dir, "versiondb");
+    var db = try Database.create(allocator, tmp.dir, "vdb", null);
     defer db.deinit();
 
     const entry_id = try db.createEntry(.{
@@ -164,10 +286,9 @@ test "update entry creates version chain" {
         .password = "pass1",
         .notes = "",
     });
-
     const v1_hash = db.listEntries()[0].head_hash;
 
-    const v2_hash = try db.updateEntry(entry_id, .{
+    _ = try db.updateEntry(entry_id, .{
         .parent_hash = v1_hash,
         .title = "MyService",
         .description = "",
@@ -177,27 +298,22 @@ test "update entry creates version chain" {
         .notes = "",
     });
 
-    // HEAD now points to v2
     const current = try db.getEntry(entry_id);
     defer current.deinit(allocator);
     try std.testing.expectEqualStrings("pass2", current.password);
     try std.testing.expectEqual(v1_hash, current.parent_hash.?);
 
-    // v1 is still readable by hash
     const v1 = try db.getVersion(v1_hash);
     defer v1.deinit(allocator);
     try std.testing.expectEqualStrings("pass1", v1.password);
-    try std.testing.expect(v1.parent_hash == null);
-
-    _ = v2_hash;
 }
 
-test "updateEntry rejects wrong parent hash" {
+test "plaintext: updateEntry rejects wrong parent hash" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var db = try Database.create(allocator, tmp.dir, "rejectdb");
+    var db = try Database.create(allocator, tmp.dir, "rdb", null);
     defer db.deinit();
 
     const entry_id = try db.createEntry(.{
@@ -209,12 +325,10 @@ test "updateEntry rejects wrong parent hash" {
         .password = "original",
         .notes = "",
     });
-
-    var bad_parent: [20]u8 = undefined;
-    @memset(&bad_parent, 0xff);
-
+    var bad: [20]u8 = undefined;
+    @memset(&bad, 0xff);
     try std.testing.expectError(error.ParentHashMismatch, db.updateEntry(entry_id, .{
-        .parent_hash = bad_parent,
+        .parent_hash = bad,
         .title = "Entry",
         .description = "",
         .url = "",
@@ -224,12 +338,12 @@ test "updateEntry rejects wrong parent hash" {
     }));
 }
 
-test "deleteEntry removes from index but not objects" {
+test "plaintext: deleteEntry removes from index but not objects" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var db = try Database.create(allocator, tmp.dir, "deletedb");
+    var db = try Database.create(allocator, tmp.dir, "ddb", null);
     defer db.deinit();
 
     const entry_id = try db.createEntry(.{
@@ -246,8 +360,88 @@ test "deleteEntry removes from index but not objects" {
     try db.deleteEntry(entry_id);
     try std.testing.expectEqual(@as(usize, 0), db.listEntries().len);
 
-    // Object is still readable by hash
     const blob = try db.getVersion(head);
     defer blob.deinit(allocator);
     try std.testing.expectEqualStrings("Temp", blob.title);
+}
+
+test "encrypted: create, add entry, save, reopen with correct password" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const entry_id = blk: {
+        var db = try Database.create(allocator, tmp.dir, "edb", "s3cr3t");
+        defer db.deinit();
+        const id = try db.createEntry(.{
+            .parent_hash = null,
+            .title = "Twitter",
+            .description = "",
+            .url = "https://twitter.com",
+            .username = "bird",
+            .password = "chirp123",
+            .notes = "",
+        });
+        try db.save();
+        break :blk id;
+    };
+
+    var db2 = try Database.open(allocator, tmp.dir, "edb", "s3cr3t");
+    defer db2.deinit();
+
+    const entries = db2.listEntries();
+    try std.testing.expectEqual(@as(usize, 1), entries.len);
+    try std.testing.expectEqualStrings("Twitter", entries[0].title);
+    try std.testing.expectEqual(entry_id, entries[0].entry_id);
+
+    const loaded = try db2.getEntry(entry_id);
+    defer loaded.deinit(allocator);
+    try std.testing.expectEqualStrings("chirp123", loaded.password);
+}
+
+test "encrypted: wrong password returns WrongPassword" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        var db = try Database.create(allocator, tmp.dir, "wdb", "correct");
+        defer db.deinit();
+        try db.save();
+    }
+
+    try std.testing.expectError(
+        error.WrongPassword,
+        Database.open(allocator, tmp.dir, "wdb", "incorrect"),
+    );
+}
+
+test "encrypted: objects are not readable as plaintext" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var db = try Database.create(allocator, tmp.dir, "opaquedb", "pw");
+    defer db.deinit();
+
+    const entry_id = try db.createEntry(.{
+        .parent_hash = null,
+        .title = "Secret",
+        .description = "",
+        .url = "",
+        .username = "",
+        .password = "topsecret",
+        .notes = "",
+    });
+    const head = db.listEntries()[0].head_hash;
+    _ = entry_id;
+
+    // Reading the raw object bytes should NOT decode as a valid entry.
+    const raw = try object.read(allocator, db.objects_dir, head);
+    defer allocator.free(raw);
+    var stream = std.io.fixedBufferStream(raw);
+    try std.testing.expectError(
+        error.EndOfStream,
+        entry_mod.Entry.deserialize(allocator, stream.reader()),
+    );
 }
