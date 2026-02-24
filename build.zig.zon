@@ -1,0 +1,17 @@
+.{
+    .name = .pazzman,
+    .version = "0.0.0",
+    .fingerprint = 0x93af25f6a7d23eca,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .zigzag = .{
+            .url = "https://github.com/meszmate/zigzag/archive/b2610e0b51006c3b8074a102b2160416c9c5c786.tar.gz",
+            .hash = "zigzag-0.1.0-YXwYS6-JBgBi_fUOjGfriig6Q0tzTrKKoa10THNHgAOv",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
