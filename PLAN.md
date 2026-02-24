@@ -98,8 +98,6 @@ src/
 
 ### Phase 4 — TUI: Core Views
 
-Wire zigzag into `build.zig` (add the local `zig-pkg/zigzag` dependency).
-
 1. **Unlock screen** (`unlock.zig`): `TextInput` for password, feedback on wrong password
 2. **Browser pane** (`browser.zig`): `List` component showing entry titles; folder-style nesting
    using `Tree`
