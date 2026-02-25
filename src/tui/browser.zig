@@ -107,7 +107,16 @@ pub const Browser = struct {
             }
         }
 
-        try self.buildRows(sorted.items, folder_paths.items, "", 0);
+        // Always-present root row — represents the database root path "".
+        try self.rows.append(self.allocator, .{
+            .is_folder = true,
+            .depth = 0,
+            .label = try self.allocator.dupe(u8, "/"),
+            .entry_id = null,
+            .path = try self.allocator.dupe(u8, ""),
+        });
+        // All folders and entries live under "/" at depth 1+.
+        try self.buildRows(sorted.items, folder_paths.items, "", 1);
     }
 
     /// Recursive DFS: emit folder rows, then entry rows for `current_prefix`.
@@ -217,43 +226,43 @@ pub const Browser = struct {
         defer buf.deinit(allocator);
         const w = buf.writer(allocator);
 
-        if (self.rows.items.len == 0) {
-            try w.writeAll("(no entries)");
-        } else {
-            const end = @min(self.scroll + visible, self.rows.items.len);
-            for (self.scroll..end) |i| {
-                if (i > self.scroll) try w.writeByte('\n');
-                const row = self.rows.items[i];
-                const selected = i == self.cursor;
+        const end = @min(self.scroll + visible, self.rows.items.len);
+        for (self.scroll..end) |i| {
+            if (i > self.scroll) try w.writeByte('\n');
+            const row = self.rows.items[i];
+            const selected = i == self.cursor;
 
-                // Base style for this row.
-                var s = zz.Style{};
-                s = s.inline_style(true);
-                if (selected) {
-                    s = s.bold(true);
-                    s = s.fg(zz.Color.cyan());
-                } else if (row.is_folder) {
-                    s = s.bold(true);
-                }
+            // Base style for this row.
+            var s = zz.Style{};
+            s = s.inline_style(true);
+            if (selected) {
+                s = s.bold(true);
+                s = s.fg(zz.Color.cyan());
+            } else if (row.is_folder) {
+                s = s.bold(true);
+            }
 
-                // Indentation (2 spaces per depth level).
-                for (0..row.depth * 2) |_| try w.writeByte(' ');
+            // Indentation (2 spaces per depth level).
+            for (0..row.depth * 2) |_| try w.writeByte(' ');
 
-                if (row.is_folder) {
-                    try w.writeAll(try s.render(allocator, row.label));
-                } else {
-                    const text = try std.fmt.allocPrint(
-                        allocator,
-                        ENTRY_ICON ++ "{s}",
-                        .{row.label},
-                    );
-                    try w.writeAll(try s.render(allocator, text));
-                }
+            if (row.is_folder) {
+                try w.writeAll(try s.render(allocator, row.label));
+            } else {
+                const text = try std.fmt.allocPrint(
+                    allocator,
+                    ENTRY_ICON ++ "{s}",
+                    .{row.label},
+                );
+                try w.writeAll(try s.render(allocator, text));
             }
         }
 
-        const title = "Entries\n";
-        const content = try std.fmt.allocPrint(allocator, "{s}{s}", .{ title, buf.items });
+        // Prepend the styled title row.
+        var title_s = zz.Style{};
+        title_s = title_s.bold(true);
+        title_s = title_s.inline_style(true);
+        const title_line = try title_s.render(allocator, "Entries");
+        const content = try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ title_line, buf.items });
 
         var box_s = zz.Style{};
         box_s = box_s.borderAll(zz.Border.rounded);
