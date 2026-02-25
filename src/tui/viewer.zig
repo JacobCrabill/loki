@@ -94,7 +94,8 @@ pub const Viewer = struct {
     }
 
     /// Prepare viewer for creating a new entry (starts in edit mode at Title).
-    pub fn setNewEntry(self: *Viewer) void {
+    /// `path` is pre-populated from the browser's current cursor location.
+    pub fn setNewEntry(self: *Viewer, path: []const u8) void {
         if (self.entry) |old| old.deinit(self.db_allocator);
         self.entry = null;
         self.entry_id = null;
@@ -104,7 +105,7 @@ pub const Viewer = struct {
         self.show_password = false;
         self.mode = .edit;
         self.notes_modified = false;
-        self.path_input.setValue("") catch {};
+        self.path_input.setValue(path) catch {};
         self.title_input.setValue("") catch {};
         self.desc_input.setValue("") catch {};
         self.url_input.setValue("") catch {};
@@ -323,7 +324,21 @@ pub const Viewer = struct {
         allocator: std.mem.Allocator,
         pane_width: u16,
         pane_height: u16,
+        focused: bool,
     ) ![]const u8 {
+        // Dialog overlays take priority.  Return early before building viewer content.
+        // We do NOT use zz.place.overlay because that function walks content
+        // byte-by-byte and cannot handle ANSI escape sequences (it counts colour-code
+        // bytes as visible columns, producing garbled output).
+        if (self.generator.active) {
+            const gen_view = try self.generator.view(allocator);
+            return zz.place.place(allocator, pane_width, pane_height, .center, .middle, gen_view);
+        }
+        if (self.history.active) {
+            const hist_view = try self.history.view(allocator);
+            return zz.place.place(allocator, pane_width, pane_height, .center, .middle, hist_view);
+        }
+
         // Size TextArea to fit inside the pane (content width = pane_width - 3 overhead,
         // minus a few more for the "Notes: " label prefix area).
         const notes_w: u16 = if (pane_width > 12) pane_width - 12 else 20;
@@ -413,28 +428,16 @@ pub const Viewer = struct {
                 "Select an entry in the browser pane.\nTab: switch pane  n: new entry  q: quit"));
         }
 
-        // style.width/height set the *content* area; subtract overhead so the
-        // rendered box exactly fills the allocated pane dimensions.
         const content_w: u16 = pane_width -| 3; // 1 left-pad + 2 borders
         const content_h: u16 = pane_height -| 2; // 2 borders (top + bottom)
 
         var box_s = zz.Style{};
         box_s = box_s.borderAll(zz.Border.rounded);
+        if (focused) box_s = box_s.borderForeground(zz.Color.cyan());
         box_s = box_s.paddingLeft(1);
         box_s = box_s.width(content_w);
         box_s = box_s.height(content_h);
-        const base = try box_s.render(allocator, buf.items);
-
-        // Overlays (generator takes priority over history).
-        if (self.generator.active) {
-            const gen_view = try self.generator.view(allocator);
-            return zz.place.overlay(allocator, base, gen_view, 2, 1);
-        }
-        if (self.history.active) {
-            const hist_view = try self.history.view(allocator);
-            return zz.place.overlay(allocator, base, hist_view, 2, 1);
-        }
-        return base;
+        return box_s.render(allocator, buf.items);
     }
 };
 

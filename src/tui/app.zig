@@ -301,8 +301,8 @@ fn viewMain(
     const browser_width: u16 = @max(20, term_width / 3);
     const viewer_width: u16 = term_width -| browser_width;
 
-    const browser_raw = try m.browser.view(allocator, browser_width, content_height);
-    const viewer_raw = try m.viewer.view(allocator, viewer_width, content_height);
+    const browser_raw = try m.browser.view(allocator, browser_width, content_height, m.active_pane == .browser);
+    const viewer_raw = try m.viewer.view(allocator, viewer_width, content_height, m.active_pane == .viewer);
     // Clip each pane's rendered lines to its allocated width so that overflowing
     // content (long URLs, help text, etc.) does not push the total beyond term_width.
     const browser_str = try clipLines(allocator, browser_raw, browser_width);
@@ -524,7 +524,7 @@ pub const Model = struct {
                             .char => |c| switch (c) {
                                 'q' => if (!m.viewer.isModified()) return .quit,
                                 'n' => {
-                                    m.viewer.setNewEntry();
+                                    m.viewer.setNewEntry(m.browser.selectedPath());
                                     m.active_pane = .viewer;
                                     return .none; // key consumed; do not pass to viewer
                                 },
