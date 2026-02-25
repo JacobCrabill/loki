@@ -2,7 +2,9 @@ const std = @import("std");
 const zz = @import("zigzag");
 const Database = @import("../store/database.zig").Database;
 const Browser = @import("browser.zig").Browser;
-const Viewer = @import("viewer.zig").Viewer;
+const viewer_mod = @import("viewer.zig");
+const Viewer = viewer_mod.Viewer;
+const ViewerSignal = viewer_mod.Signal;
 
 /// Set this before calling `run()`.
 pub var g_db_path: []const u8 = "";
@@ -96,10 +98,18 @@ fn makeMainScreen(pa: std.mem.Allocator, db: Database) !MainScreen {
     };
     try screen.browser.populate(screen.db.listEntries());
     if (screen.browser.selectedEntryId()) |eid| {
+        const head_hash = findHeadHash(screen.db.listEntries(), eid);
         const entry = screen.db.getEntry(eid) catch null;
-        screen.viewer.setEntry(entry);
+        screen.viewer.setEntry(eid, head_hash, entry);
     }
     return screen;
+}
+
+fn findHeadHash(entries: []const @import("../store/index.zig").IndexEntry, entry_id: [20]u8) ?[20]u8 {
+    for (entries) |ie| {
+        if (std.mem.eql(u8, &ie.entry_id, &entry_id)) return ie.head_hash;
+    }
+    return null;
 }
 
 fn makeUnlockScreen(pa: std.mem.Allocator, err_msg: ?[]const u8) UnlockScreen {
@@ -275,13 +285,37 @@ fn viewMain(
     const panes = try zz.joinHorizontal(allocator, &.{ browser_str, viewer_str });
 
     const pane_label: []const u8 = if (m.active_pane == .browser) "[browser]" else "[viewer]";
+    const mod_label: []const u8 = if (m.viewer.isModified()) "  [modified]" else "";
     var status_s = zz.Style{};
     status_s = status_s.dim(true);
-    const status_text = try std.fmt.allocPrint(allocator, " {s}  {s}", .{ g_db_path, pane_label });
+    const status_text = try std.fmt.allocPrint(allocator, " {s}  {s}{s}", .{ g_db_path, pane_label, mod_label });
     const status = try status_s.render(allocator, status_text);
 
     return std.fmt.allocPrint(allocator, "{s}\n{s}", .{ panes, status });
 }
+
+fn saveEntry(m: *MainScreen, pa: std.mem.Allocator) void {
+    const entry = m.viewer.buildEntry() catch return;
+    defer entry.deinit(pa);
+
+    if (m.viewer.is_new) {
+        // Require at least a non-empty title.
+        if (entry.title.len == 0) return;
+        const eid = m.db.createEntry(entry) catch return;
+        m.db.save() catch {};
+        m.browser.populate(m.db.listEntries()) catch {};
+        // head_hash == entry_id for a genesis entry.
+        const loaded = m.db.getEntry(eid) catch null;
+        m.viewer.setEntry(eid, eid, loaded);
+    } else if (m.viewer.entry_id) |eid| {
+        const new_hash = m.db.updateEntry(eid, entry) catch return;
+        m.db.save() catch {};
+        m.browser.populate(m.db.listEntries()) catch {};
+        const loaded = m.db.getEntry(eid) catch null;
+        m.viewer.setEntry(eid, new_hash, loaded);
+    }
+}
+
 
 // =============================================================================
 // Model
@@ -453,19 +487,49 @@ pub const Model = struct {
             },
             .main => |*m| {
                 switch (k.key) {
-                    .char => |c| if (c == 'q') return .quit,
-                    .tab => m.active_pane = if (m.active_pane == .browser) .viewer else .browser,
+                    .char => |c| switch (c) {
+                        'q' => if (!m.viewer.isModified()) return .quit,
+                        'n' => {
+                            m.viewer.setNewEntry();
+                            m.active_pane = .viewer;
+                        },
+                        else => {},
+                    },
+                    .tab => {
+                        // Leave edit mode before switching panes.
+                        if (m.viewer.isEditing()) m.viewer.leaveEditMode();
+                        m.active_pane = if (m.active_pane == .browser) .viewer else .browser;
+                    },
                     else => {},
                 }
                 switch (m.active_pane) {
                     .browser => {
                         m.browser.handleKey(k);
-                        if (m.browser.selectedEntryId()) |eid| {
-                            const entry = m.db.getEntry(eid) catch null;
-                            m.viewer.setEntry(entry);
+                        // Only update the viewer if no unsaved changes.
+                        if (!m.viewer.isModified()) {
+                            if (m.browser.selectedEntryId()) |eid| {
+                                const head_hash = findHeadHash(m.db.listEntries(), eid);
+                                const entry = m.db.getEntry(eid) catch null;
+                                m.viewer.setEntry(eid, head_hash, entry);
+                            } else {
+                                m.viewer.setEntry(null, null, null);
+                            }
                         }
                     },
-                    .viewer => m.viewer.handleKey(k),
+                    .viewer => {
+                        const sig = m.viewer.handleKey(k, &m.db);
+                        switch (sig) {
+                            .none => {},
+                            .save => saveEntry(m, pa),
+                            .show_history => {
+                                if (m.viewer.entry_id) |eid| {
+                                    if (m.viewer.head_hash) |hh| {
+                                        m.viewer.history.show(&m.db, eid, hh) catch {};
+                                    }
+                                }
+                            },
+                        }
+                    },
                 }
             },
         }
