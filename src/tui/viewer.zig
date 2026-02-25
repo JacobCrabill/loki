@@ -2,8 +2,8 @@ const std = @import("std");
 const zz = @import("zigzag");
 const Entry = @import("../model/entry.zig").Entry;
 
-// Fields the cursor can move across (indices 0–6).
-const FIELD_COUNT = 7;
+// Fields the cursor can move across (indices 0–7).
+const FIELD_COUNT = 8;
 
 /// Right pane: read-only view of a single entry.
 pub const Viewer = struct {
@@ -11,7 +11,7 @@ pub const Viewer = struct {
     entry: ?Entry,
     /// Allocator that was used when the entry strings were allocated.
     db_allocator: std.mem.Allocator,
-    /// Which field is highlighted (0 = title, …, 5 = notes, 6 = parent).
+    /// Which field is highlighted (0 = path, 1 = title, …, 6 = notes, 7 = parent).
     field_cursor: usize,
     /// Whether to show the password in cleartext.
     show_password: bool,
@@ -66,18 +66,19 @@ pub const Viewer = struct {
         const w = buf.writer(allocator);
 
         if (self.entry) |e| {
-            try writeField(w, allocator, "Title", e.title, self.field_cursor == 0, false, false);
-            try writeField(w, allocator, "Description", e.description, self.field_cursor == 1, false, false);
-            try writeField(w, allocator, "URL", e.url, self.field_cursor == 2, false, false);
-            try writeField(w, allocator, "Username", e.username, self.field_cursor == 3, false, false);
+            try writeField(w, allocator, "Path", e.path, self.field_cursor == 0, false, false);
+            try writeField(w, allocator, "Title", e.title, self.field_cursor == 1, false, false);
+            try writeField(w, allocator, "Description", e.description, self.field_cursor == 2, false, false);
+            try writeField(w, allocator, "URL", e.url, self.field_cursor == 3, false, false);
+            try writeField(w, allocator, "Username", e.username, self.field_cursor == 4, false, false);
             // Password: mask unless show_password
             const pw_value: []const u8 = if (self.show_password) e.password else blk: {
                 const m = try allocator.alloc(u8, e.password.len);
                 @memset(m, '*');
                 break :blk m;
             };
-            try writeField(w, allocator, "Password", pw_value, self.field_cursor == 4, false, false);
-            try writeField(w, allocator, "Notes", e.notes, self.field_cursor == 5, false, false);
+            try writeField(w, allocator, "Password", pw_value, self.field_cursor == 5, false, false);
+            try writeField(w, allocator, "Notes", e.notes, self.field_cursor == 6, false, false);
 
             // Parent hash (italic, dimmed)
             var hex_buf: [40]u8 = undefined;
@@ -85,7 +86,7 @@ pub const Viewer = struct {
                 hex_buf = std.fmt.bytesToHex(h, .lower);
                 break :blk &hex_buf;
             } else "(genesis)";
-            try writeField(w, allocator, "Parent", parent_str, self.field_cursor == 6, true, false);
+            try writeField(w, allocator, "Parent", parent_str, self.field_cursor == 7, true, false);
 
             // Help bar
             try w.writeByte('\n');

@@ -22,12 +22,19 @@ const UnlockScreen = struct {
     }
 };
 
-const CreateField = enum { password, confirm };
+const CreateStage = enum {
+    /// Entering the new password.
+    password,
+    /// Confirming the new password.
+    confirm,
+    /// Yes/no prompt before actually creating.
+    confirming,
+};
 
 const CreateScreen = struct {
     pw_input: zz.TextInput,
     confirm_input: zz.TextInput,
-    active_field: CreateField,
+    stage: CreateStage,
     error_msg: ?[]const u8,
 
     fn deinit(self: *CreateScreen) void {
@@ -113,7 +120,7 @@ fn makeCreateScreen(pa: std.mem.Allocator) CreateScreen {
     return .{
         .pw_input = pw,
         .confirm_input = confirm,
-        .active_field = .password,
+        .stage = .password,
         .error_msg = null,
     };
 }
@@ -195,18 +202,28 @@ fn viewCreate(
     const pw_str = try c.pw_input.view(allocator);
     const cf_str = try c.confirm_input.view(allocator);
 
-    if (c.active_field == .password) {
-        try w.writeAll(arrow);
-        try w.writeAll(pw_str);
-        try w.writeByte('\n');
-        try w.writeAll("  "); // align with arrow width
-        try w.writeAll(try dim_s.render(allocator, cf_str));
-    } else {
-        try w.writeAll("  ");
-        try w.writeAll(try dim_s.render(allocator, pw_str));
-        try w.writeByte('\n');
-        try w.writeAll(arrow);
-        try w.writeAll(cf_str);
+    switch (c.stage) {
+        .password => {
+            try w.writeAll(arrow);
+            try w.writeAll(pw_str);
+            try w.writeByte('\n');
+            try w.writeAll("  ");
+            try w.writeAll(try dim_s.render(allocator, cf_str));
+        },
+        .confirm => {
+            try w.writeAll("  ");
+            try w.writeAll(try dim_s.render(allocator, pw_str));
+            try w.writeByte('\n');
+            try w.writeAll(arrow);
+            try w.writeAll(cf_str);
+        },
+        .confirming => {
+            try w.writeAll("  ");
+            try w.writeAll(try dim_s.render(allocator, pw_str));
+            try w.writeByte('\n');
+            try w.writeAll("  ");
+            try w.writeAll(try dim_s.render(allocator, cf_str));
+        },
     }
 
     if (c.error_msg) |emsg| {
@@ -216,7 +233,24 @@ fn viewCreate(
         try w.writeAll(try err_s.render(allocator, emsg));
     }
 
-    try w.writeAll("\n\nLeave blank for unencrypted.  Tab: next field  Enter: create  Esc: quit");
+    if (c.stage == .confirming) {
+        try w.writeAll("\n\n");
+        try w.writeAll(arrow);
+        var confirm_s = zz.Style{};
+        confirm_s = confirm_s.bold(true);
+        try w.writeAll(try confirm_s.render(allocator, "Create this database?"));
+        try w.writeAll("\n\n");
+        var hint_s = zz.Style{};
+        hint_s = hint_s.dim(true);
+        try w.writeAll(try hint_s.render(allocator, "Y / Enter: yes   N / Esc: no"));
+    } else {
+        const hint: []const u8 = switch (c.stage) {
+            .confirm, .password => "Tab / Shift+Tab: prev field   Enter: confirm   Esc: quit",
+            .confirming => unreachable,
+        };
+        try w.writeAll("\n\nLeave blank for unencrypted.  ");
+        try w.writeAll(hint);
+    }
 
     var box_s = zz.Style{};
     box_s = box_s.borderAll(zz.Border.rounded);
@@ -320,16 +354,29 @@ pub const Model = struct {
                 }
             },
             .create => |*c| {
-                switch (k.key) {
-                    .escape => return .quit,
-                    .tab, .enter => {
-                        if (c.active_field == .password) {
-                            // Move focus to confirm field.
+                switch (c.stage) {
+                    .password => switch (k.key) {
+                        .escape => return .quit,
+                        // Tab, Shift+Tab, or Enter: advance to confirm field.
+                        .tab, .enter => {
                             c.pw_input.blur();
                             c.confirm_input.focus();
-                            c.active_field = .confirm;
-                        } else {
-                            // Attempt creation.
+                            c.stage = .confirm;
+                            c.error_msg = null;
+                        },
+                        else => c.pw_input.handleKey(k),
+                    },
+                    .confirm => switch (k.key) {
+                        .escape => return .quit,
+                        // Tab or Shift+Tab: cycle back to password field.
+                        .tab => {
+                            c.confirm_input.blur();
+                            c.pw_input.focus();
+                            c.stage = .password;
+                            c.error_msg = null;
+                        },
+                        .enter => {
+                            // Validate then move to yes/no confirmation.
                             const pw = c.pw_input.getValue();
                             const cf = c.confirm_input.getValue();
                             if (!std.mem.eql(u8, pw, cf)) {
@@ -338,28 +385,69 @@ pub const Model = struct {
                                 c.confirm_input.blur();
                                 c.pw_input.setValue("") catch {};
                                 c.pw_input.focus();
-                                c.active_field = .password;
+                                c.stage = .password;
                                 return .none;
                             }
+                            c.confirm_input.blur();
+                            c.stage = .confirming;
+                            c.error_msg = null;
+                        },
+                        else => c.confirm_input.handleKey(k),
+                    },
+                    .confirming => switch (k.key) {
+                        .escape => {
+                            // Back to confirm field.
+                            c.confirm_input.focus();
+                            c.stage = .confirm;
+                        },
+                        .enter => {
+                            const pw = c.pw_input.getValue();
                             const password: ?[]const u8 = if (pw.len > 0) pw else null;
                             var db = createDb(pa, g_db_path, password) catch {
                                 c.error_msg = "Failed to create database.";
+                                c.confirm_input.focus();
+                                c.stage = .confirm;
                                 return .none;
                             };
-                            // Save the empty index.
                             db.save() catch {};
                             const main = makeMainScreen(pa, db) catch {
                                 db.deinit();
                                 c.error_msg = "Failed to initialise database.";
+                                c.confirm_input.focus();
+                                c.stage = .confirm;
                                 return .none;
                             };
                             c.deinit();
                             self.screen = .{ .main = main };
-                        }
-                    },
-                    else => switch (c.active_field) {
-                        .password => c.pw_input.handleKey(k),
-                        .confirm => c.confirm_input.handleKey(k),
+                        },
+                        .char => |ch| switch (ch) {
+                            'y', 'Y' => {
+                                const pw = c.pw_input.getValue();
+                                const password: ?[]const u8 = if (pw.len > 0) pw else null;
+                                var db = createDb(pa, g_db_path, password) catch {
+                                    c.error_msg = "Failed to create database.";
+                                    c.confirm_input.focus();
+                                    c.stage = .confirm;
+                                    return .none;
+                                };
+                                db.save() catch {};
+                                const main = makeMainScreen(pa, db) catch {
+                                    db.deinit();
+                                    c.error_msg = "Failed to initialise database.";
+                                    c.confirm_input.focus();
+                                    c.stage = .confirm;
+                                    return .none;
+                                };
+                                c.deinit();
+                                self.screen = .{ .main = main };
+                            },
+                            'n', 'N' => {
+                                c.confirm_input.focus();
+                                c.stage = .confirm;
+                            },
+                            else => {},
+                        },
+                        else => {},
                     },
                 }
             },

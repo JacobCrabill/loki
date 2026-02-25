@@ -108,15 +108,16 @@ src/
 
 ### Phase 5 — TUI: Editing & Generation
 
-1. Editing mode in `viewer.zig`: press `e` on a field to enter edit mode via `TextInput`/ `TextArea`
+1. Ability to add new entries
+2. Editing mode in `viewer.zig`: press `e` on a field to enter edit mode via `TextInput`/ `TextArea`
    ; track which fields are modified; highlight modified fields with a colored border and `*`
    indicator
-2. `S` to save: serialize entry, compute SHA-1, store as new object version, update index HEAD
-3. Discard changes prompt (`Confirm` component)
-4. **Password generator** (`generator.zig`): dialog overlay with configurable length, checkboxes for
+3. `S` to save: serialize entry, compute SHA-1, store as new object version, update index HEAD
+4. Discard changes prompt (`Confirm` component)
+5. **Password generator** (`generator.zig`): dialog overlay with configurable length, checkboxes for
    character classes (uppercase, lowercase, digits, symbols), preview of generated password, option
    to edit before accepting
-5. **Version history view** (`history_view.zig`): `List` of past versions with timestamps; select to
+6. **Version history view** (`history_view.zig`): `List` of past versions with timestamps; select to
    view a past version read-only; option to restore
 
 ### Phase 6 — TUI: Merge & Conflict Resolution

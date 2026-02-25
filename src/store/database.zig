@@ -147,7 +147,7 @@ pub const Database = struct {
         defer buf.deinit(self.allocator);
         try entry.serialize(buf.writer(self.allocator));
         const h = try self.writeObject(buf.items);
-        try self.index.addEntry(h, h, entry.title);
+        try self.index.addEntry(h, h, entry.title, entry.path);
         return h;
     }
 
@@ -163,7 +163,7 @@ pub const Database = struct {
         defer buf.deinit(self.allocator);
         try entry.serialize(buf.writer(self.allocator));
         const new_hash = try self.writeObject(buf.items);
-        try self.index.updateEntry(entry_id, new_hash, entry.title);
+        try self.index.updateEntry(entry_id, new_hash, entry.title, entry.path);
         return new_hash;
     }
 
@@ -243,6 +243,7 @@ test "plaintext: create, add entry, save, reopen" {
         defer db.deinit();
         const id = try db.createEntry(.{
             .parent_hash = null,
+            .path = "",
             .title = "GitHub",
             .description = "My GitHub account",
             .url = "https://github.com",
@@ -279,6 +280,7 @@ test "plaintext: update entry creates version chain" {
 
     const entry_id = try db.createEntry(.{
         .parent_hash = null,
+        .path = "",
         .title = "MyService",
         .description = "",
         .url = "",
@@ -290,6 +292,7 @@ test "plaintext: update entry creates version chain" {
 
     _ = try db.updateEntry(entry_id, .{
         .parent_hash = v1_hash,
+        .path = "",
         .title = "MyService",
         .description = "",
         .url = "",
@@ -318,6 +321,7 @@ test "plaintext: updateEntry rejects wrong parent hash" {
 
     const entry_id = try db.createEntry(.{
         .parent_hash = null,
+        .path = "",
         .title = "Entry",
         .description = "",
         .url = "",
@@ -329,6 +333,7 @@ test "plaintext: updateEntry rejects wrong parent hash" {
     @memset(&bad, 0xff);
     try std.testing.expectError(error.ParentHashMismatch, db.updateEntry(entry_id, .{
         .parent_hash = bad,
+        .path = "",
         .title = "Entry",
         .description = "",
         .url = "",
@@ -348,6 +353,7 @@ test "plaintext: deleteEntry removes from index but not objects" {
 
     const entry_id = try db.createEntry(.{
         .parent_hash = null,
+        .path = "",
         .title = "Temp",
         .description = "",
         .url = "",
@@ -375,6 +381,7 @@ test "encrypted: create, add entry, save, reopen with correct password" {
         defer db.deinit();
         const id = try db.createEntry(.{
             .parent_hash = null,
+            .path = "",
             .title = "Twitter",
             .description = "",
             .url = "https://twitter.com",
@@ -426,6 +433,7 @@ test "encrypted: objects are not readable as plaintext" {
 
     const entry_id = try db.createEntry(.{
         .parent_hash = null,
+        .path = "",
         .title = "Secret",
         .description = "",
         .url = "",

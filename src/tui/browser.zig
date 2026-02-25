@@ -19,12 +19,27 @@ pub const Browser = struct {
         self.list.deinit();
     }
 
-    /// Replace the list contents with `entries`. Resets cursor to top.
+    /// Replace the list contents with `entries`, sorted by path then title.
     pub fn populate(self: *Browser, entries: []const IndexEntry) !void {
+        // Sort a copy by (path, title).
+        var sorted: std.ArrayList(IndexEntry) = .{};
+        defer sorted.deinit(self.allocator);
+        try sorted.appendSlice(self.allocator, entries);
+        std.mem.sort(IndexEntry, sorted.items, {}, struct {
+            fn lessThan(_: void, a: IndexEntry, b: IndexEntry) bool {
+                const pc = std.mem.order(u8, a.path, b.path);
+                if (pc != .eq) return pc == .lt;
+                return std.mem.order(u8, a.title, b.title) == .lt;
+            }
+        }.lessThan);
+
         var items: std.ArrayList(zz.List([20]u8).Item) = .{};
         defer items.deinit(self.allocator);
-        for (entries) |e| {
-            const item = zz.List([20]u8).Item.init(e.entry_id, e.title);
+        for (sorted.items) |e| {
+            const item = if (e.path.len > 0)
+                zz.List([20]u8).Item.withDescription(e.entry_id, e.title, e.path)
+            else
+                zz.List([20]u8).Item.init(e.entry_id, e.title);
             try items.append(self.allocator, item);
         }
         try self.list.setItems(items.items);

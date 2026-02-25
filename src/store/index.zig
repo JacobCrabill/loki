@@ -1,7 +1,7 @@
 const std = @import("std");
 
 /// Magic bytes + version identifying PazzMan index files.
-const MAGIC = "PZMIDX\x00\x01";
+const MAGIC = "PZMIDX\x00\x02";
 
 /// A single record in the index mapping a stable entry ID to its current HEAD.
 pub const IndexEntry = struct {
@@ -9,6 +9,9 @@ pub const IndexEntry = struct {
     entry_id: [20]u8,
     /// The SHA-1 hash of the most recent version.
     head_hash: [20]u8,
+    /// Forward-slash-separated folder path, e.g. "Work/Acme-Inc". Cached for
+    /// fast listing without decrypting objects.
+    path: []const u8,
     /// Cached title for fast listing without decrypting objects.
     title: []const u8,
 };
@@ -21,6 +24,8 @@ pub const IndexEntry = struct {
 ///     20 bytes  head_hash
 ///      2 bytes  title length (u16 LE)
 ///      N bytes  title (UTF-8)
+///      2 bytes  path length (u16 LE)
+///      N bytes  path (UTF-8)
 pub const Index = struct {
     allocator: std.mem.Allocator,
     entries: std.ArrayList(IndexEntry),
@@ -30,7 +35,10 @@ pub const Index = struct {
     }
 
     pub fn deinit(self: *Index) void {
-        for (self.entries.items) |e| self.allocator.free(e.title);
+        for (self.entries.items) |e| {
+            self.allocator.free(e.title);
+            self.allocator.free(e.path);
+        }
         self.entries.deinit(self.allocator);
     }
 
@@ -62,10 +70,16 @@ pub const Index = struct {
             errdefer allocator.free(title);
             try r.readNoEof(title);
 
+            const path_len = try r.readInt(u16, .little);
+            const path = try allocator.alloc(u8, path_len);
+            errdefer allocator.free(path);
+            try r.readNoEof(path);
+
             idx.entries.appendAssumeCapacity(.{
                 .entry_id = entry_id,
                 .head_hash = head_hash,
                 .title = title,
+                .path = path,
             });
         }
 
@@ -82,6 +96,8 @@ pub const Index = struct {
             try writer.writeAll(&e.head_hash);
             try writer.writeInt(u16, @intCast(e.title.len), .little);
             try writer.writeAll(e.title);
+            try writer.writeInt(u16, @intCast(e.path.len), .little);
+            try writer.writeAll(e.path);
         }
     }
 
@@ -115,23 +131,40 @@ pub const Index = struct {
         return null;
     }
 
-    /// Add a new entry record. Dupes `title` into the index allocator.
-    pub fn addEntry(self: *Index, entry_id: [20]u8, head_hash: [20]u8, title: []const u8) !void {
+    /// Add a new entry record. Dupes `title` and `path` into the index allocator.
+    pub fn addEntry(
+        self: *Index,
+        entry_id: [20]u8,
+        head_hash: [20]u8,
+        title: []const u8,
+        path: []const u8,
+    ) !void {
         const title_copy = try self.allocator.dupe(u8, title);
         errdefer self.allocator.free(title_copy);
+        const path_copy = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(path_copy);
         try self.entries.append(self.allocator, .{
             .entry_id = entry_id,
             .head_hash = head_hash,
             .title = title_copy,
+            .path = path_copy,
         });
     }
 
-    /// Update the HEAD and title for an existing entry.
-    pub fn updateEntry(self: *Index, entry_id: [20]u8, head_hash: [20]u8, title: []const u8) !void {
+    /// Update the HEAD, title, and path for an existing entry.
+    pub fn updateEntry(
+        self: *Index,
+        entry_id: [20]u8,
+        head_hash: [20]u8,
+        title: []const u8,
+        path: []const u8,
+    ) !void {
         const e = self.find(entry_id) orelse return error.EntryNotFound;
         e.head_hash = head_hash;
         self.allocator.free(e.title);
         e.title = try self.allocator.dupe(u8, title);
+        self.allocator.free(e.path);
+        e.path = try self.allocator.dupe(u8, path);
     }
 
     /// Remove an entry record. The underlying objects are not deleted.
@@ -139,6 +172,7 @@ pub const Index = struct {
         for (self.entries.items, 0..) |e, i| {
             if (std.mem.eql(u8, &e.entry_id, &entry_id)) {
                 self.allocator.free(e.title);
+                self.allocator.free(e.path);
                 _ = self.entries.swapRemove(i);
                 return;
             }
@@ -188,8 +222,8 @@ test "roundtrip with multiple entries" {
 
     var idx = Index.init(allocator);
     defer idx.deinit();
-    try idx.addEntry(id1, h1, "First Entry");
-    try idx.addEntry(id2, h2, "Second Entry");
+    try idx.addEntry(id1, h1, "GitHub", "Work/Acme-Inc");
+    try idx.addEntry(id2, h2, "Personal Email", "");
     try idx.write(tmp.dir);
 
     var loaded = try Index.read(allocator, tmp.dir);
@@ -198,12 +232,14 @@ test "roundtrip with multiple entries" {
     try std.testing.expectEqual(@as(usize, 2), loaded.entries.items.len);
     try std.testing.expectEqual(id1, loaded.entries.items[0].entry_id);
     try std.testing.expectEqual(h1, loaded.entries.items[0].head_hash);
-    try std.testing.expectEqualStrings("First Entry", loaded.entries.items[0].title);
+    try std.testing.expectEqualStrings("GitHub", loaded.entries.items[0].title);
+    try std.testing.expectEqualStrings("Work/Acme-Inc", loaded.entries.items[0].path);
     try std.testing.expectEqual(id2, loaded.entries.items[1].entry_id);
-    try std.testing.expectEqualStrings("Second Entry", loaded.entries.items[1].title);
+    try std.testing.expectEqualStrings("Personal Email", loaded.entries.items[1].title);
+    try std.testing.expectEqualStrings("", loaded.entries.items[1].path);
 }
 
-test "updateEntry" {
+test "updateEntry updates path and title" {
     const allocator = std.testing.allocator;
     var id: [20]u8 = undefined;
     @memset(&id, 0x01);
@@ -214,11 +250,12 @@ test "updateEntry" {
 
     var idx = Index.init(allocator);
     defer idx.deinit();
-    try idx.addEntry(id, h1, "Original Title");
-    try idx.updateEntry(id, h2, "New Title");
+    try idx.addEntry(id, h1, "Original Title", "Old/Path");
+    try idx.updateEntry(id, h2, "New Title", "New/Path");
 
     try std.testing.expectEqual(h2, idx.entries.items[0].head_hash);
     try std.testing.expectEqualStrings("New Title", idx.entries.items[0].title);
+    try std.testing.expectEqualStrings("New/Path", idx.entries.items[0].path);
 }
 
 test "removeEntry" {
@@ -230,7 +267,13 @@ test "removeEntry" {
 
     var idx = Index.init(allocator);
     defer idx.deinit();
-    try idx.addEntry(id, h, "To Remove");
+    try idx.addEntry(id, h, "To Remove", "Some/Path");
     try idx.removeEntry(id);
     try std.testing.expectEqual(@as(usize, 0), idx.entries.items.len);
+}
+
+test "invalid magic returns error" {
+    const allocator = std.testing.allocator;
+    const bad = "BADMAGIC" ++ "\x00" ** 4;
+    try std.testing.expectError(error.InvalidIndexFormat, Index.fromBytes(allocator, bad));
 }

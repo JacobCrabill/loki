@@ -8,6 +8,9 @@ const std = @import("std");
 pub const Entry = struct {
     /// SHA-1 hash of the previous version, or null for the genesis version.
     parent_hash: ?[20]u8,
+    /// Forward-slash-separated folder path, e.g. "Work/Acme-Inc". Empty string
+    /// means the entry lives at the root.
+    path: []const u8,
     title: []const u8,
     description: []const u8,
     url: []const u8,
@@ -23,6 +26,7 @@ pub const Entry = struct {
         } else {
             try writer.writeByte(0);
         }
+        try writeString(writer, self.path);
         try writeString(writer, self.title);
         try writeString(writer, self.description);
         try writeString(writer, self.url);
@@ -41,6 +45,8 @@ pub const Entry = struct {
             break :blk h;
         } else null;
 
+        const path = try readString(allocator, reader);
+        errdefer allocator.free(path);
         const title = try readString(allocator, reader);
         errdefer allocator.free(title);
         const description = try readString(allocator, reader);
@@ -56,6 +62,7 @@ pub const Entry = struct {
 
         return Entry{
             .parent_hash = parent_hash,
+            .path = path,
             .title = title,
             .description = description,
             .url = url,
@@ -67,6 +74,7 @@ pub const Entry = struct {
 
     /// Free all string fields. Only call on entries from `deserialize`.
     pub fn deinit(self: Entry, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
         allocator.free(self.title);
         allocator.free(self.description);
         allocator.free(self.url);
@@ -93,6 +101,7 @@ test "roundtrip without parent hash" {
     const allocator = std.testing.allocator;
     const original = Entry{
         .parent_hash = null,
+        .path = "Work/Acme-Inc",
         .title = "GitHub",
         .description = "My GitHub account",
         .url = "https://github.com",
@@ -110,6 +119,7 @@ test "roundtrip without parent hash" {
     defer loaded.deinit(allocator);
 
     try std.testing.expect(loaded.parent_hash == null);
+    try std.testing.expectEqualStrings(original.path, loaded.path);
     try std.testing.expectEqualStrings(original.title, loaded.title);
     try std.testing.expectEqualStrings(original.description, loaded.description);
     try std.testing.expectEqualStrings(original.url, loaded.url);
@@ -125,6 +135,7 @@ test "roundtrip with parent hash" {
 
     const original = Entry{
         .parent_hash = parent,
+        .path = "Personal",
         .title = "Updated",
         .description = "",
         .url = "",
@@ -142,6 +153,7 @@ test "roundtrip with parent hash" {
     defer loaded.deinit(allocator);
 
     try std.testing.expectEqual(parent, loaded.parent_hash.?);
+    try std.testing.expectEqualStrings("Personal", loaded.path);
     try std.testing.expectEqualStrings("Updated", loaded.title);
     try std.testing.expectEqualStrings("newpass", loaded.password);
 }
@@ -150,6 +162,7 @@ test "empty string fields" {
     const allocator = std.testing.allocator;
     const original = Entry{
         .parent_hash = null,
+        .path = "",
         .title = "",
         .description = "",
         .url = "",
@@ -166,6 +179,32 @@ test "empty string fields" {
     const loaded = try Entry.deserialize(allocator, stream.reader());
     defer loaded.deinit(allocator);
 
+    try std.testing.expectEqualStrings("", loaded.path);
     try std.testing.expectEqualStrings("", loaded.title);
     try std.testing.expectEqualStrings("", loaded.password);
+}
+
+test "nested path roundtrip" {
+    const allocator = std.testing.allocator;
+    const original = Entry{
+        .parent_hash = null,
+        .path = "Work/Acme-Inc/Engineering",
+        .title = "CI Server",
+        .description = "",
+        .url = "https://ci.acme.example",
+        .username = "admin",
+        .password = "ci_pass",
+        .notes = "",
+    };
+
+    var buf: std.ArrayList(u8) = .{};
+    defer buf.deinit(allocator);
+    try original.serialize(buf.writer(allocator));
+
+    var stream = std.io.fixedBufferStream(buf.items);
+    const loaded = try Entry.deserialize(allocator, stream.reader());
+    defer loaded.deinit(allocator);
+
+    try std.testing.expectEqualStrings("Work/Acme-Inc/Engineering", loaded.path);
+    try std.testing.expectEqualStrings("CI Server", loaded.title);
 }
