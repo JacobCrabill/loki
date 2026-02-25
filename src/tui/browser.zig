@@ -53,10 +53,17 @@ pub const Browser = struct {
         return self.list.selectedValue();
     }
 
-    /// Render the browser pane. Updates list.height based on available height.
+    /// Render the browser pane. `pane_width` and `pane_height` are the total
+    /// outer dimensions (including borders and padding) allocated to this pane.
     pub fn view(self: *Browser, allocator: std.mem.Allocator, pane_width: u16, pane_height: u16) ![]const u8 {
-        // Reserve 2 rows for border and 1 for title line inside the border.
-        const list_height: u16 = if (pane_height > 4) pane_height - 4 else 1;
+        // style.width/height set the *content* area; borders (+2 cols, +2 rows)
+        // and paddingLeft (+1 col) are added on top.  Subtract those overheads
+        // so the rendered box exactly fills `pane_width` × `pane_height`.
+        const content_w: u16 = pane_width -| 3; // 1 left-pad + 2 borders
+        const content_h: u16 = pane_height -| 2; // 2 borders (top + bottom)
+
+        // Reserve rows for border (already in content_h), title line, and list scroll.
+        const list_height: u16 = if (content_h > 2) content_h - 2 else 1;
         self.list.height = list_height;
 
         const list_str = try self.list.view(allocator);
@@ -67,8 +74,8 @@ pub const Browser = struct {
         var s = zz.Style{};
         s = s.borderAll(zz.Border.rounded);
         s = s.paddingLeft(1);
-        s = s.width(pane_width);
-        s = s.height(pane_height);
+        s = s.width(content_w);
+        s = s.height(content_h);
         return s.render(allocator, content);
     }
 };

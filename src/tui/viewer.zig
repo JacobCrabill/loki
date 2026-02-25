@@ -324,8 +324,9 @@ pub const Viewer = struct {
         pane_width: u16,
         pane_height: u16,
     ) ![]const u8 {
-        // Size TextArea to fit the pane.
-        const notes_w: u16 = if (pane_width > 8) pane_width - 8 else 20;
+        // Size TextArea to fit inside the pane (content width = pane_width - 3 overhead,
+        // minus a few more for the "Notes: " label prefix area).
+        const notes_w: u16 = if (pane_width > 12) pane_width - 12 else 20;
         self.notes_area.setSize(notes_w, 4);
 
         var buf: std.ArrayList(u8) = .{};
@@ -412,11 +413,16 @@ pub const Viewer = struct {
                 "Select an entry in the browser pane.\nTab: switch pane  n: new entry  q: quit"));
         }
 
+        // style.width/height set the *content* area; subtract overhead so the
+        // rendered box exactly fills the allocated pane dimensions.
+        const content_w: u16 = pane_width -| 3; // 1 left-pad + 2 borders
+        const content_h: u16 = pane_height -| 2; // 2 borders (top + bottom)
+
         var box_s = zz.Style{};
         box_s = box_s.borderAll(zz.Border.rounded);
         box_s = box_s.paddingLeft(1);
-        box_s = box_s.width(pane_width);
-        box_s = box_s.height(pane_height);
+        box_s = box_s.width(content_w);
+        box_s = box_s.height(content_h);
         const base = try box_s.render(allocator, buf.items);
 
         // Overlays (generator takes priority over history).

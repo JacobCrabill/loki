@@ -270,6 +270,27 @@ fn viewCreate(
     return zz.place.place(allocator, term_width, term_height, .center, .middle, box);
 }
 
+/// Clip each line of `str` to `max_width` visual columns (ANSI-aware).
+/// Lines wider than `max_width` get truncated with "…" via zz.measure.truncate.
+fn clipLines(allocator: std.mem.Allocator, str: []const u8, max_width: usize) ![]const u8 {
+    var out: std.ArrayList(u8) = .{};
+    defer out.deinit(allocator);
+    var lines = std.mem.splitScalar(u8, str, '\n');
+    var first = true;
+    while (lines.next()) |line| {
+        if (!first) try out.append(allocator, '\n');
+        first = false;
+        if (zz.measure.width(line) > max_width) {
+            const clipped = try zz.measure.truncate(allocator, line, max_width);
+            defer allocator.free(clipped);
+            try out.appendSlice(allocator, clipped);
+        } else {
+            try out.appendSlice(allocator, line);
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
+
 fn viewMain(
     m: *MainScreen,
     allocator: std.mem.Allocator,
@@ -280,8 +301,12 @@ fn viewMain(
     const browser_width: u16 = @max(20, term_width / 3);
     const viewer_width: u16 = term_width -| browser_width;
 
-    const browser_str = try m.browser.view(allocator, browser_width, content_height);
-    const viewer_str = try m.viewer.view(allocator, viewer_width, content_height);
+    const browser_raw = try m.browser.view(allocator, browser_width, content_height);
+    const viewer_raw = try m.viewer.view(allocator, viewer_width, content_height);
+    // Clip each pane's rendered lines to its allocated width so that overflowing
+    // content (long URLs, help text, etc.) does not push the total beyond term_width.
+    const browser_str = try clipLines(allocator, browser_raw, browser_width);
+    const viewer_str = try clipLines(allocator, viewer_raw, viewer_width);
     const panes = try zz.joinHorizontal(allocator, &.{ browser_str, viewer_str });
 
     const pane_label: []const u8 = if (m.active_pane == .browser) "[browser]" else "[viewer]";
@@ -486,26 +511,28 @@ pub const Model = struct {
                 }
             },
             .main => |*m| {
-                switch (k.key) {
-                    .char => |c| switch (c) {
-                        'q' => if (!m.viewer.isModified()) return .quit,
-                        'n' => {
-                            m.viewer.setNewEntry();
-                            m.active_pane = .viewer;
-                        },
-                        else => {},
-                    },
-                    .tab => {
-                        // Leave edit mode before switching panes.
-                        if (m.viewer.isEditing()) m.viewer.leaveEditMode();
-                        m.active_pane = if (m.active_pane == .browser) .viewer else .browser;
-                    },
-                    else => {},
+                // Tab always switches panes (and exits edit mode first).
+                if (k.key == .tab) {
+                    if (m.viewer.isEditing()) m.viewer.leaveEditMode();
+                    m.active_pane = if (m.active_pane == .browser) .viewer else .browser;
+                    return .none;
                 }
+
                 switch (m.active_pane) {
                     .browser => {
-                        m.browser.handleKey(k);
-                        // Only update the viewer if no unsaved changes.
+                        switch (k.key) {
+                            .char => |c| switch (c) {
+                                'q' => if (!m.viewer.isModified()) return .quit,
+                                'n' => {
+                                    m.viewer.setNewEntry();
+                                    m.active_pane = .viewer;
+                                    return .none; // key consumed; do not pass to viewer
+                                },
+                                else => m.browser.handleKey(k),
+                            },
+                            else => m.browser.handleKey(k),
+                        }
+                        // Update viewer when browser selection changes (no unsaved edits).
                         if (!m.viewer.isModified()) {
                             if (m.browser.selectedEntryId()) |eid| {
                                 const head_hash = findHeadHash(m.db.listEntries(), eid);
