@@ -5,6 +5,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const zigzag = b.dependency("zigzag", .{ .optimize = optimize, .target = target });
+    const known_folders = b.dependency("known_folders", .{ .optimize = optimize, .target = target });
 
     const mod = b.addModule("loki", .{
         .root_source_file = b.path("src/root.zig"),
@@ -21,6 +22,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "loki", .module = mod },
                 .{ .name = "zigzag", .module = zigzag.module("zigzag") },
+                .{ .name = "known-folders", .module = known_folders.module("known-folders") },
             },
         }),
     });

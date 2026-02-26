@@ -8,6 +8,10 @@
             .url = "https://github.com/meszmate/zigzag/archive/b2610e0b51006c3b8074a102b2160416c9c5c786.tar.gz",
             .hash = "zigzag-0.1.0-YXwYS6-JBgBi_fUOjGfriig6Q0tzTrKKoa10THNHgAOv",
         },
+        .known_folders = .{
+            .url = "git+https://github.com/ziglibs/known-folders.git#ab5cf5feb936fa3b72c95d3ad0c0c67791937ba1",
+            .hash = "known_folders-0.0.0-Fy-PJtTTAADUOhGKM0sxzG4eMkNQxRvx9e5dfHVyaeA3",
+        },
     },
     .paths = .{
         "build.zig",
