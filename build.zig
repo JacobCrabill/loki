@@ -8,7 +8,7 @@ pub fn build(b: *std.Build) void {
     const known_folders = b.dependency("known_folders", .{ .optimize = optimize, .target = target });
 
     const mod = b.addModule("loki", .{
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path("src/lib/root.zig"),
         .target = target,
     });
     mod.addImport("zigzag", zigzag.module("zigzag"));
@@ -16,7 +16,7 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{
         .name = "loki",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
+            .root_source_file = b.path("src/app/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{

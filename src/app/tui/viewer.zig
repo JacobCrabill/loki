@@ -1,6 +1,8 @@
 const std = @import("std");
 const zz = @import("zigzag");
-const Entry = @import("../model/entry.zig").Entry;
+const loki = @import("loki");
+
+const Entry = loki.Entry;
 const Generator = @import("generator.zig").Generator;
 
 // Field indices: 0=path, 1=title, 2=description, 3=url, 4=username, 5=password, 6=notes
@@ -291,6 +293,12 @@ pub const Viewer = struct {
                     // Open password generator when cursor is on Password field.
                     self.generator.show();
                 },
+                'y' => switch (self.field_cursor) {
+                    .url => copyToClipboard(self.url_input.getValue(), self.db_allocator),
+                    .username => copyToClipboard(self.user_input.getValue(), self.db_allocator),
+                    .password => copyToClipboard(self.pw_input.getValue(), self.db_allocator),
+                    else => {},
+                },
                 'H' => if (!self.is_new) return .show_history,
                 's' => return .save,
                 'q' => {
@@ -412,9 +420,9 @@ pub const Viewer = struct {
             const hints: []const u8 = if (editing)
                 "Enter/Esc: stop editing   s: save"
             else if (self.isModified())
-                "j/k: nav  e: edit  s: save  h: toggle pw  g: gen pw  H: history"
+                "j/k: nav  e: edit  s: save  h: toggle pw  g: gen pw  y: copy  H: history"
             else
-                "j/k: nav  e: edit  h: pw  g: gen  H: history  Tab: switch  q: quit";
+                "j/k: nav  e: edit  h: pw  g: gen  y: copy  H: history  Tab: switch  q: quit";
             try w.writeAll(try hint_s.render(allocator, hints));
         } else {
             try w.writeAll("No entry selected.\n\n");
@@ -520,6 +528,16 @@ pub const Viewer = struct {
         }
     }
 };
+
+fn copyToClipboard(text: []const u8, allocator: std.mem.Allocator) void {
+    const encoded_len = std.base64.standard.Encoder.calcSize(text.len);
+    const encoded_buf = allocator.alloc(u8, encoded_len) catch return;
+    defer allocator.free(encoded_buf);
+    const encoded = std.base64.standard.Encoder.encode(encoded_buf, text);
+    const seq = std.fmt.allocPrint(allocator, "\x1b]52;c;{s}\x07", .{encoded}) catch return;
+    defer allocator.free(seq);
+    std.fs.File.stdout().writeAll(seq) catch {};
+}
 
 fn labelStyle(selected: bool, modified: bool) zz.Style {
     var s = zz.Style{};

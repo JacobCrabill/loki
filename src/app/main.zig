@@ -1,5 +1,5 @@
 const std = @import("std");
-const app = @import("loki").tui.app;
+const app = @import("tui.zig").tui.app;
 const known_folders = @import("known-folders");
 
 pub fn main() !void {

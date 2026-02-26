@@ -1,6 +1,8 @@
 const std = @import("std");
 const zz = @import("zigzag");
-const IndexEntry = @import("../store/index.zig").IndexEntry;
+const loki = @import("loki");
+
+const IndexEntry = loki.store.index.IndexEntry;
 
 const ENTRY_ICON = "󰂺 ";
 const DIR_ICON = " ";

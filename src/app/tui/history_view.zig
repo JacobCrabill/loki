@@ -1,7 +1,9 @@
 const std = @import("std");
 const zz = @import("zigzag");
-const Entry = @import("../model/entry.zig").Entry;
-const Database = @import("../store/database.zig").Database;
+const loki = @import("loki");
+
+const Entry = loki.Entry;
+const Database = loki.Database;
 
 /// A single entry in the history list.
 const HistoryItem = struct {

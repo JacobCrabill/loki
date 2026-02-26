@@ -1,6 +1,9 @@
 const std = @import("std");
 const zz = @import("zigzag");
-const Database = @import("../store/database.zig").Database;
+const loki = @import("loki");
+
+const IndexEntry = loki.store.index.IndexEntry;
+const Database = loki.Database;
 const Browser = @import("browser.zig").Browser;
 const Viewer = @import("viewer.zig").Viewer;
 const HistoryView = @import("history_view.zig").HistoryView;
@@ -107,7 +110,7 @@ fn makeMainScreen(pa: std.mem.Allocator, db: Database) !MainScreen {
     return screen;
 }
 
-fn findHeadHash(entries: []const @import("../store/index.zig").IndexEntry, entry_id: [20]u8) ?[20]u8 {
+fn findHeadHash(entries: []const IndexEntry, entry_id: [20]u8) ?[20]u8 {
     for (entries) |ie| {
         if (std.mem.eql(u8, &ie.entry_id, &entry_id)) return ie.head_hash;
     }
