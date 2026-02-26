@@ -3,6 +3,7 @@ const zz = @import("zigzag");
 const IndexEntry = @import("../store/index.zig").IndexEntry;
 
 const ENTRY_ICON = "󰂺 ";
+const DIR_ICON = " ";
 
 /// A single visible row in the tree browser.
 const Row = struct {
@@ -246,7 +247,12 @@ pub const Browser = struct {
             for (0..row.depth * 2) |_| try w.writeByte(' ');
 
             if (row.is_folder) {
-                try w.writeAll(try s.render(allocator, row.label));
+                const text = try std.fmt.allocPrint(
+                    allocator,
+                    DIR_ICON ++ "{s}",
+                    .{row.label},
+                );
+                try w.writeAll(try s.render(allocator, text));
             } else {
                 const text = try std.fmt.allocPrint(
                     allocator,
@@ -265,8 +271,11 @@ pub const Browser = struct {
         const content = try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ title_line, buf.items });
 
         var box_s = zz.Style{};
-        box_s = box_s.borderAll(zz.Border.rounded);
-        if (focused) box_s = box_s.borderForeground(zz.Color.cyan());
+        if (focused) {
+            box_s = box_s.borderAll(zz.Border.thick).borderForeground(zz.Color.cyan());
+        } else {
+            box_s = box_s.borderAll(zz.Border.rounded);
+        }
         box_s = box_s.paddingLeft(1);
         box_s = box_s.width(content_w);
         box_s = box_s.height(content_h);

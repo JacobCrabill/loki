@@ -2,9 +2,7 @@ const std = @import("std");
 const zz = @import("zigzag");
 const Database = @import("../store/database.zig").Database;
 const Browser = @import("browser.zig").Browser;
-const viewer_mod = @import("viewer.zig");
-const Viewer = viewer_mod.Viewer;
-const ViewerSignal = viewer_mod.Signal;
+const Viewer = @import("viewer.zig").Viewer;
 
 /// Set this before calling `run()`.
 pub var g_db_path: []const u8 = "";
@@ -303,11 +301,7 @@ fn viewMain(
 
     const browser_raw = try m.browser.view(allocator, browser_width, content_height, m.active_pane == .browser);
     const viewer_raw = try m.viewer.view(allocator, viewer_width, content_height, m.active_pane == .viewer);
-    // Clip each pane's rendered lines to its allocated width so that overflowing
-    // content (long URLs, help text, etc.) does not push the total beyond term_width.
-    const browser_str = try clipLines(allocator, browser_raw, browser_width);
-    const viewer_str = try clipLines(allocator, viewer_raw, viewer_width);
-    const panes = try zz.joinHorizontal(allocator, &.{ browser_str, viewer_str });
+    const panes = try zz.joinHorizontal(allocator, &.{ browser_raw, viewer_raw });
 
     const pane_label: []const u8 = if (m.active_pane == .browser) "[browser]" else "[viewer]";
     const mod_label: []const u8 = if (m.viewer.isModified()) "  [modified]" else "";
@@ -340,7 +334,6 @@ fn saveEntry(m: *MainScreen, pa: std.mem.Allocator) void {
         m.viewer.setEntry(eid, new_hash, loaded);
     }
 }
-
 
 // =============================================================================
 // Model
@@ -555,6 +548,7 @@ pub const Model = struct {
                                     }
                                 }
                             },
+                            .quit => return .quit,
                         }
                     },
                 }

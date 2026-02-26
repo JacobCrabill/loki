@@ -11,7 +11,52 @@ const FIELD_COUNT = 8;
 
 const Mode = enum { view, edit };
 
-pub const Signal = enum { none, save, show_history };
+pub const Signal = enum { none, save, show_history, quit };
+
+const Fields = enum(u8) {
+    path,
+    title,
+    description,
+    url,
+    username,
+    password,
+    notes,
+    parent,
+    field_max,
+    _, // We leave the enum open to allow casting from integers
+};
+
+fn getFieldName(field: Fields) []const u8 {
+    return switch (field) {
+        .path => "Path",
+        .title => "Title",
+        .description => "Description",
+        .url => "URL",
+        .username => "Username",
+        .password => "Password",
+        .notes => "Notes",
+        .parent => "Parent",
+        else => "<Invalid>",
+    };
+}
+
+/// Text edit Components used for data entry
+const TextEdit = union(enum) {
+    input: *zz.TextInput,
+    area: *zz.TextArea,
+
+    pub fn view(self: *const TextEdit, allocator: std.mem.Allocator) ![]const u8 {
+        return switch (self.*) {
+            inline else => |e| try e.view(allocator),
+        };
+    }
+
+    pub fn handleKey(self: *const TextEdit, key: zz.KeyEvent) void {
+        switch (self.*) {
+            inline else => |*e| e.*.handleKey(key),
+        }
+    }
+};
 
 pub const Viewer = struct {
     // Entry state
@@ -22,7 +67,7 @@ pub const Viewer = struct {
 
     // UI state
     db_allocator: std.mem.Allocator,
-    field_cursor: usize,
+    field_cursor: Fields = .path,
     show_password: bool,
     mode: Mode,
 
@@ -50,7 +95,7 @@ pub const Viewer = struct {
             .head_hash = null,
             .is_new = false,
             .db_allocator = allocator,
-            .field_cursor = 0,
+            .field_cursor = .path,
             .show_password = false,
             .mode = .view,
             .path_input = zz.TextInput.init(allocator),
@@ -85,7 +130,7 @@ pub const Viewer = struct {
         self.entry_id = entry_id;
         self.head_hash = head_hash;
         self.is_new = false;
-        self.field_cursor = 0;
+        self.field_cursor = .path;
         self.show_password = false;
         self.mode = .view;
         self.notes_modified = false;
@@ -101,7 +146,7 @@ pub const Viewer = struct {
         self.entry_id = null;
         self.head_hash = null;
         self.is_new = true;
-        self.field_cursor = 1; // start at Title
+        self.field_cursor = .title;
         self.show_password = false;
         self.mode = .edit;
         self.notes_modified = false;
@@ -124,14 +169,14 @@ pub const Viewer = struct {
     /// Returns true if any field differs from the saved entry (or always true for new entries).
     pub fn isModified(self: *const Viewer) bool {
         if (self.is_new) return true;
-        for (0..EDITABLE) |i| if (self.fieldModified(i)) return true;
+        for (0..@intFromEnum(Fields.parent)) |i| if (self.fieldModified(@enumFromInt(i))) return true;
         return false;
     }
 
     /// Gracefully exit edit mode (commits current field, stays in view mode).
     pub fn leaveEditMode(self: *Viewer) void {
         if (self.mode != .edit) return;
-        if (self.field_cursor == 6) self.checkNotesModified();
+        if (self.field_cursor == .notes) self.checkNotesModified();
         self.mode = .view;
         self.blurAll();
     }
@@ -169,40 +214,41 @@ pub const Viewer = struct {
     fn focusCurrent(self: *Viewer) void {
         self.blurAll();
         switch (self.field_cursor) {
-            0 => self.path_input.focus(),
-            1 => self.title_input.focus(),
-            2 => self.desc_input.focus(),
-            3 => self.url_input.focus(),
-            4 => self.user_input.focus(),
-            5 => self.pw_input.focus(),
-            6 => self.notes_area.focus(),
+            .path => self.path_input.focus(),
+            .title => self.title_input.focus(),
+            .description => self.desc_input.focus(),
+            .url => self.url_input.focus(),
+            .username => self.user_input.focus(),
+            .password => self.pw_input.focus(),
+            .notes => self.notes_area.focus(),
             else => {},
         }
     }
 
-    fn inputFor(self: *Viewer, idx: usize) ?*zz.TextInput {
-        return switch (idx) {
-            0 => &self.path_input,
-            1 => &self.title_input,
-            2 => &self.desc_input,
-            3 => &self.url_input,
-            4 => &self.user_input,
-            5 => &self.pw_input,
+    fn inputFor(self: *Viewer, field: Fields) ?TextEdit {
+        return switch (field) {
+            .path => .{ .input = &self.path_input },
+            .title => .{ .input = &self.title_input },
+            .description => .{ .input = &self.desc_input },
+            .url => .{ .input = &self.url_input },
+            .username => .{ .input = &self.user_input },
+            .password => .{ .input = &self.pw_input },
+            .notes => .{ .area = &self.notes_area },
             else => null,
         };
     }
 
-    fn fieldModified(self: *const Viewer, idx: usize) bool {
+    fn fieldModified(self: *const Viewer, field: Fields) bool {
         if (self.is_new) return false;
         const e = self.entry orelse return false;
-        return switch (idx) {
-            0 => !std.mem.eql(u8, self.path_input.getValue(), e.path),
-            1 => !std.mem.eql(u8, self.title_input.getValue(), e.title),
-            2 => !std.mem.eql(u8, self.desc_input.getValue(), e.description),
-            3 => !std.mem.eql(u8, self.url_input.getValue(), e.url),
-            4 => !std.mem.eql(u8, self.user_input.getValue(), e.username),
-            5 => !std.mem.eql(u8, self.pw_input.getValue(), e.password),
-            6 => self.notes_modified,
+        return switch (field) {
+            .path => !std.mem.eql(u8, self.path_input.getValue(), e.path),
+            .title => !std.mem.eql(u8, self.title_input.getValue(), e.title),
+            .description => !std.mem.eql(u8, self.desc_input.getValue(), e.description),
+            .url => !std.mem.eql(u8, self.url_input.getValue(), e.url),
+            .username => !std.mem.eql(u8, self.user_input.getValue(), e.username),
+            .password => !std.mem.eql(u8, self.pw_input.getValue(), e.password),
+            .notes => self.notes_modified,
             else => false,
         };
     }
@@ -251,35 +297,35 @@ pub const Viewer = struct {
     fn viewKey(self: *Viewer, key: zz.KeyEvent) Signal {
         switch (key.key) {
             .char => |c| switch (c) {
-                'j' => self.field_cursor = @min(self.field_cursor + 1, FIELD_COUNT - 1),
-                'k' => if (self.field_cursor > 0) {
-                    self.field_cursor -= 1;
-                },
+                'j' => self.incrementFieldCursor(),
+                'k' => self.decrementFieldCursor(),
                 'h' => self.show_password = !self.show_password,
-                'e' => if (self.field_cursor < EDITABLE) {
+                'e' => if (@intFromEnum(self.field_cursor) < @intFromEnum(Fields.parent)) {
                     self.mode = .edit;
                     self.focusCurrent();
                 },
-                'g' => if (self.field_cursor == 5) {
+                'g' => if (self.field_cursor == .password) {
                     // Open password generator when cursor is on Password field.
                     self.generator.show();
                 },
                 'H' => if (!self.is_new) return .show_history,
-                'S' => return .save,
+                's' => return .save,
+                'q' => {
+                    if (!self.isModified())
+                        return .quit;
+                    // TODO: handle dirty state, ask for confirmation or save
+                },
                 else => {},
             },
-            .down => self.field_cursor = @min(self.field_cursor + 1, FIELD_COUNT - 1),
-            .up => if (self.field_cursor > 0) {
-                self.field_cursor -= 1;
-            },
+            .down => self.incrementFieldCursor(),
+            .up => self.decrementFieldCursor(),
             else => {},
         }
         return .none;
     }
 
     fn editKey(self: *Viewer, key: zz.KeyEvent) Signal {
-        const idx = self.field_cursor;
-        if (idx == 6) {
+        if (self.field_cursor == .notes) {
             // TextArea: Esc exits edit mode; everything else goes to the area.
             switch (key.key) {
                 .escape => {
@@ -289,14 +335,15 @@ pub const Viewer = struct {
                 },
                 else => self.notes_area.handleKey(key),
             }
-        } else if (idx < EDITABLE) {
+        } else if (@intFromEnum(self.field_cursor) < @intFromEnum(Fields.parent)) {
             // TextInput: Esc or Enter exits edit mode.
             switch (key.key) {
                 .escape, .enter => {
                     self.mode = .view;
                     self.blurAll();
                 },
-                else => if (self.inputFor(idx)) |inp| inp.handleKey(key),
+                // TODO: notes_area as a textarea - create union to avoid need for optional
+                else => if (self.inputFor(self.field_cursor)) |*inp| inp.handleKey(key),
             }
         }
         return .none;
@@ -341,6 +388,7 @@ pub const Viewer = struct {
 
         // Size TextArea to fit inside the pane (content width = pane_width - 3 overhead,
         // minus a few more for the "Notes: " label prefix area).
+        // TODO: No magic nubmers!
         const notes_w: u16 = if (pane_width > 12) pane_width - 12 else 20;
         self.notes_area.setSize(notes_w, 4);
 
@@ -351,45 +399,14 @@ pub const Viewer = struct {
         if (self.entry != null or self.is_new) {
             const editing = self.mode == .edit;
 
-            try renderField(w, allocator, self.inputFor(0).?, 0, "Path",
-                self.path_input.getValue(), self.field_cursor, editing, self.fieldModified(0));
-            try renderField(w, allocator, self.inputFor(1).?, 1, "Title",
-                self.title_input.getValue(), self.field_cursor, editing, self.fieldModified(1));
-            try renderField(w, allocator, self.inputFor(2).?, 2, "Description",
-                self.desc_input.getValue(), self.field_cursor, editing, self.fieldModified(2));
-            try renderField(w, allocator, self.inputFor(3).?, 3, "URL",
-                self.url_input.getValue(), self.field_cursor, editing, self.fieldModified(3));
-            try renderField(w, allocator, self.inputFor(4).?, 4, "Username",
-                self.user_input.getValue(), self.field_cursor, editing, self.fieldModified(4));
-
-            // Password: masked in view mode unless show_password is set.
-            const pw_raw = self.pw_input.getValue();
-            const pw_display: []const u8 = if (self.show_password or (editing and self.field_cursor == 5))
-                pw_raw
-            else blk: {
-                const m = try allocator.alloc(u8, pw_raw.len);
-                @memset(m, '*');
-                break :blk m;
-            };
-            try renderField(w, allocator, self.inputFor(5).?, 5, "Password",
-                pw_display, self.field_cursor, editing, self.fieldModified(5));
-
-            // Notes: TextArea in edit mode, plain text in view mode.
-            const notes_selected = self.field_cursor == 6;
-            const notes_mod = self.fieldModified(6);
-            const mod_star: []const u8 = if (notes_mod) "*" else "";
-            const notes_label = try std.fmt.allocPrint(allocator, "Notes{s}: ", .{mod_star});
-            try w.writeAll(try labelStyle(notes_selected, notes_mod).render(allocator, notes_label));
-            if (editing and notes_selected) {
-                try w.writeByte('\n');
-                try w.writeAll(try self.notes_area.view(allocator));
-            } else {
-                const notes_val = try self.notes_area.getValue(allocator);
-                var vs = zz.Style{};
-                if (notes_selected) vs = vs.fg(zz.Color.cyan());
-                try w.writeAll(try vs.render(allocator, notes_val));
-            }
-            try w.writeByte('\n');
+            // TODO: use loop to reduce duplicate code
+            try self.renderField(w, allocator, .path, editing);
+            try self.renderField(w, allocator, .title, editing);
+            try self.renderField(w, allocator, .description, editing);
+            try self.renderField(w, allocator, .url, editing);
+            try self.renderField(w, allocator, .username, editing);
+            try self.renderField(w, allocator, .password, editing);
+            try self.renderField(w, allocator, .notes, editing);
 
             // Parent hash (read-only, italic/dim).
             if (!self.is_new) {
@@ -399,7 +416,7 @@ pub const Viewer = struct {
                         hex_buf = std.fmt.bytesToHex(h, .lower);
                         break :blk &hex_buf;
                     } else "(genesis)";
-                    const sel = self.field_cursor == 7;
+                    const sel = self.field_cursor == .parent;
                     try w.writeAll(try labelStyle(sel, false).render(allocator, "Parent: "));
                     var vs = zz.Style{};
                     vs = vs.italic(true);
@@ -414,9 +431,9 @@ pub const Viewer = struct {
             var hint_s = zz.Style{};
             hint_s = hint_s.dim(true);
             const hints: []const u8 = if (editing)
-                "Enter/Esc: stop editing   S: save"
+                "Enter/Esc: stop editing   s: save"
             else if (self.isModified())
-                "j/k: nav  e: edit  S: save  h: toggle pw  g: gen pw  H: history"
+                "j/k: nav  e: edit  s: save  h: toggle pw  g: gen pw  H: history"
             else
                 "j/k: nav  e: edit  h: pw  g: gen  H: history  Tab: switch  q: quit";
             try w.writeAll(try hint_s.render(allocator, hints));
@@ -424,20 +441,104 @@ pub const Viewer = struct {
             try w.writeAll("No entry selected.\n\n");
             var dim_s = zz.Style{};
             dim_s = dim_s.dim(true);
-            try w.writeAll(try dim_s.render(allocator,
-                "Select an entry in the browser pane.\nTab: switch pane  n: new entry  q: quit"));
+            try w.writeAll(try dim_s.render(allocator, "Select an entry in the browser pane.\nTab: switch pane  n: new entry  q: quit"));
         }
 
-        const content_w: u16 = pane_width -| 3; // 1 left-pad + 2 borders
+        const content_w: u16 = pane_width -| 4; // 1 left-pad + 2 borders + (?)1 right-pad(?)
         const content_h: u16 = pane_height -| 2; // 2 borders (top + bottom)
 
         var box_s = zz.Style{};
-        box_s = box_s.borderAll(zz.Border.rounded);
+        if (focused) {
+            box_s = box_s.borderAll(zz.Border.thick).borderForeground(zz.Color.cyan());
+        } else {
+            box_s = box_s.borderAll(zz.Border.rounded);
+        }
         if (focused) box_s = box_s.borderForeground(zz.Color.cyan());
         box_s = box_s.paddingLeft(1);
         box_s = box_s.width(content_w);
         box_s = box_s.height(content_h);
         return box_s.render(allocator, buf.items);
+    }
+
+    fn renderField(
+        self: *Viewer,
+        writer: anytype,
+        allocator: std.mem.Allocator,
+        field: Fields,
+        editing: bool,
+    ) !void {
+        const name = getFieldName(field);
+        const display_val = self.getFieldValue(field, allocator);
+        const modified = self.fieldModified(field);
+        const selected = self.field_cursor == field;
+        const editing_this = editing and selected;
+
+        const mod_star: []const u8 = if (modified) "*" else "";
+        const label = try std.fmt.allocPrint(allocator, "{s}{s}: ", .{ name, mod_star });
+        try writer.writeAll(try labelStyle(selected, modified).render(allocator, label));
+        if (editing_this) {
+            if (self.inputFor(field)) |input| {
+                if (field == .notes) try writer.writeAll("\n");
+                try writer.writeAll(try input.view(allocator));
+                if (field == .notes) try writer.writeAll("\n");
+            }
+        } else {
+            var vs = zz.Style{};
+            if (selected) vs = vs.fg(zz.Color.cyan());
+            if (field == .password and !self.show_password) {
+                // Password: masked in view mode unless show_password is set.
+                const hidden_pw = try allocator.alloc(u8, display_val.len);
+                @memset(hidden_pw, '*');
+                try writer.writeAll(try vs.render(allocator, hidden_pw));
+            } else if (field == .notes) {
+                try writer.writeAll("\n");
+                try writer.writeAll(try vs.render(allocator, display_val));
+            } else {
+                try writer.writeAll(try vs.render(allocator, display_val));
+            }
+        }
+        try writer.writeByte('\n');
+    }
+
+    /// Get the raw value of the given field
+    ///
+    /// TODO: verify that the allocator is an arena!
+    fn getFieldValue(self: *const Viewer, field: Fields, arena: std.mem.Allocator) []const u8 {
+        return switch (field) {
+            .path => self.path_input.getValue(),
+            .title => self.title_input.getValue(),
+            .description => self.desc_input.getValue(),
+            .url => self.url_input.getValue(),
+            .username => self.user_input.getValue(),
+            .password => self.pw_input.getValue(),
+            .notes => self.notes_area.getValue(arena) catch "ERROR: OOM",
+            .parent => blk: {
+                if (!self.is_new) {
+                    if (self.entry) |ee| {
+                        var hex_buf: [40]u8 = undefined;
+                        if (ee.parent_hash) |h| {
+                            hex_buf = std.fmt.bytesToHex(h, .lower);
+                            break :blk arena.dupe(u8, hex_buf[0..]) catch "ERROR: OOM";
+                        }
+                    }
+                }
+                break :blk "(genesis)";
+            },
+            else => "ERROR: Invalid Field",
+        };
+    }
+
+    fn incrementFieldCursor(self: *Viewer) void {
+        const idx: u8 = @intFromEnum(self.field_cursor);
+        const max_idx: u8 = @intFromEnum(Fields.field_max) - 1;
+        self.field_cursor = @enumFromInt(@min(idx + 1, max_idx));
+    }
+
+    fn decrementFieldCursor(self: *Viewer) void {
+        const idx: u8 = @intFromEnum(self.field_cursor);
+        if (idx > 0) {
+            self.field_cursor = @enumFromInt(@max(idx - 1, 0));
+        }
     }
 };
 
@@ -456,30 +557,4 @@ fn labelStyle(selected: bool, modified: bool) zz.Style {
     }
     if (modified) s = s.fg(zz.Color.yellow());
     return s;
-}
-
-fn renderField(
-    w: anytype,
-    allocator: std.mem.Allocator,
-    input: *zz.TextInput,
-    idx: usize,
-    name: []const u8,
-    display_val: []const u8,
-    cursor: usize,
-    editing: bool,
-    modified: bool,
-) !void {
-    const selected = cursor == idx;
-    const editing_this = editing and selected;
-    const mod_star: []const u8 = if (modified) "*" else "";
-    const label = try std.fmt.allocPrint(allocator, "{s}{s}: ", .{ name, mod_star });
-    try w.writeAll(try labelStyle(selected, modified).render(allocator, label));
-    if (editing_this) {
-        try w.writeAll(try input.view(allocator));
-    } else {
-        var vs = zz.Style{};
-        if (selected) vs = vs.fg(zz.Color.cyan());
-        try w.writeAll(try vs.render(allocator, display_val));
-    }
-    try w.writeByte('\n');
 }
