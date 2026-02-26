@@ -2,7 +2,6 @@ const std = @import("std");
 const zz = @import("zigzag");
 const Entry = @import("../model/entry.zig").Entry;
 const Generator = @import("generator.zig").Generator;
-const HistoryView = @import("history_view.zig").HistoryView;
 
 // Field indices: 0=path, 1=title, 2=description, 3=url, 4=username, 5=password, 6=notes
 // Field 7=parent is read-only.
@@ -85,8 +84,6 @@ pub const Viewer = struct {
 
     // Password generator dialog.
     generator: Generator,
-    // Version history overlay.
-    history: HistoryView,
 
     pub fn init(allocator: std.mem.Allocator) Viewer {
         return .{
@@ -107,7 +104,6 @@ pub const Viewer = struct {
             .notes_area = zz.TextArea.init(allocator),
             .notes_modified = false,
             .generator = Generator.init(),
-            .history = HistoryView.init(allocator),
         };
     }
 
@@ -120,7 +116,6 @@ pub const Viewer = struct {
         self.user_input.deinit();
         self.pw_input.deinit();
         self.notes_area.deinit();
-        self.history.deinit();
     }
 
     /// Set entry for viewing/editing an existing entry.
@@ -263,20 +258,8 @@ pub const Viewer = struct {
         }
     }
 
-    pub fn handleKey(self: *Viewer, key: zz.KeyEvent, db: anytype) Signal {
-        // History view intercepts all keys when active.
-        if (self.history.active) {
-            const sig = self.history.handleKey(key, db);
-            if (sig == .restored) {
-                // Reload the current entry after a restore.
-                if (self.entry_id) |eid| {
-                    const head_hash = findIndexHeadHash(db.listEntries(), eid);
-                    const loaded = db.getEntry(eid) catch null;
-                    self.setEntry(eid, head_hash, loaded);
-                }
-            }
-            return .none;
-        }
+    pub fn handleKey(self: *Viewer, key: zz.KeyEvent, _db: anytype) Signal {
+        _ = _db;
         // Generator intercepts all keys when active.
         if (self.generator.active) {
             self.generator.handleKey(key);
@@ -380,10 +363,6 @@ pub const Viewer = struct {
         if (self.generator.active) {
             const gen_view = try self.generator.view(allocator);
             return zz.place.place(allocator, pane_width, pane_height, .center, .middle, gen_view);
-        }
-        if (self.history.active) {
-            const hist_view = try self.history.view(allocator);
-            return zz.place.place(allocator, pane_width, pane_height, .center, .middle, hist_view);
         }
 
         // Size TextArea to fit inside the pane (content width = pane_width - 3 overhead,
@@ -541,13 +520,6 @@ pub const Viewer = struct {
         }
     }
 };
-
-fn findIndexHeadHash(entries: anytype, entry_id: [20]u8) ?[20]u8 {
-    for (entries) |ie| {
-        if (std.mem.eql(u8, &ie.entry_id, &entry_id)) return ie.head_hash;
-    }
-    return null;
-}
 
 fn labelStyle(selected: bool, modified: bool) zz.Style {
     var s = zz.Style{};

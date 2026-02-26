@@ -3,6 +3,7 @@ const zz = @import("zigzag");
 const Database = @import("../store/database.zig").Database;
 const Browser = @import("browser.zig").Browser;
 const Viewer = @import("viewer.zig").Viewer;
+const HistoryView = @import("history_view.zig").HistoryView;
 
 /// Set this before calling `run()`.
 pub var g_db_path: []const u8 = "";
@@ -47,9 +48,11 @@ const MainScreen = struct {
     db: Database,
     browser: Browser,
     viewer: Viewer,
+    history: HistoryView,
     active_pane: Pane,
 
     fn deinit(self: *MainScreen) void {
+        self.history.deinit();
         self.viewer.deinit();
         self.browser.deinit();
         self.db.deinit();
@@ -92,6 +95,7 @@ fn makeMainScreen(pa: std.mem.Allocator, db: Database) !MainScreen {
         .db = db,
         .browser = Browser.init(pa),
         .viewer = Viewer.init(pa),
+        .history = HistoryView.init(pa),
         .active_pane = .browser,
     };
     try screen.browser.populate(screen.db.listEntries());
@@ -299,9 +303,14 @@ fn viewMain(
     const browser_width: u16 = @max(20, term_width / 3);
     const viewer_width: u16 = term_width -| browser_width;
 
-    const browser_raw = try m.browser.view(allocator, browser_width, content_height, m.active_pane == .browser);
-    const viewer_raw = try m.viewer.view(allocator, viewer_width, content_height, m.active_pane == .viewer);
-    const panes = try zz.joinHorizontal(allocator, &.{ browser_raw, viewer_raw });
+    // When in history mode, show history list as the left pane.
+    const left_raw = if (m.history.active)
+        try m.history.view(allocator, browser_width, content_height, true)
+    else
+        try m.browser.view(allocator, browser_width, content_height, m.active_pane == .browser);
+    // Viewer shows focused=false while in history mode (history has focus).
+    const viewer_raw = try m.viewer.view(allocator, viewer_width, content_height, !m.history.active and m.active_pane == .viewer);
+    const panes = try zz.joinHorizontal(allocator, &.{ left_raw, viewer_raw });
 
     const pane_label: []const u8 = if (m.active_pane == .browser) "[browser]" else "[viewer]";
     const mod_label: []const u8 = if (m.viewer.isModified()) "  [modified]" else "";
@@ -504,6 +513,37 @@ pub const Model = struct {
                 }
             },
             .main => |*m| {
+                // History mode intercepts all keys.
+                if (m.history.active) {
+                    const sig = m.history.handleKey(k, &m.db);
+                    switch (sig) {
+                        .none => {
+                            // Navigation: take preview and update viewer.
+                            if (m.history.takePreview()) |preview| {
+                                m.viewer.setEntry(m.history.entry_id, m.history.selectedHash(), preview);
+                            }
+                        },
+                        .closed => {
+                            // Reload the current HEAD version into viewer.
+                            const eid = m.history.entry_id;
+                            const head_hash = findHeadHash(m.db.listEntries(), eid);
+                            const entry = m.db.getEntry(eid) catch null;
+                            m.viewer.setEntry(eid, head_hash, entry);
+                            m.active_pane = .viewer;
+                        },
+                        .restored => {
+                            // Entry was restored: repopulate browser, reload from db.
+                            const eid = m.history.entry_id;
+                            m.browser.populate(m.db.listEntries()) catch {};
+                            const head_hash = findHeadHash(m.db.listEntries(), eid);
+                            const entry = m.db.getEntry(eid) catch null;
+                            m.viewer.setEntry(eid, head_hash, entry);
+                            m.active_pane = .viewer;
+                        },
+                    }
+                    return .none;
+                }
+
                 // Tab always switches panes (and exits edit mode first).
                 if (k.key == .tab) {
                     if (m.viewer.isEditing()) m.viewer.leaveEditMode();
@@ -544,7 +584,7 @@ pub const Model = struct {
                             .show_history => {
                                 if (m.viewer.entry_id) |eid| {
                                     if (m.viewer.head_hash) |hh| {
-                                        m.viewer.history.show(&m.db, eid, hh) catch {};
+                                        m.history.show(&m.db, eid, hh) catch {};
                                     }
                                 }
                             },

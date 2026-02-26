@@ -12,14 +12,15 @@ const HistoryItem = struct {
 
 pub const Signal = enum { none, restored, closed };
 
-/// Overlay widget: shows the version history of one entry.
-/// Caller is responsible for deiniting items with the same allocator.
+/// Left-pane widget: shows the version history of one entry.
+/// Caller is responsible for deiniting with the same allocator.
 pub const HistoryView = struct {
     active: bool,
     allocator: std.mem.Allocator,
     entry_id: [20]u8,
     items: std.ArrayList(HistoryItem) = .{},
     cursor: usize,
+    scroll: usize,
     /// Loaded preview of the selected version (null if none loaded or error).
     preview: ?Entry,
 
@@ -29,6 +30,7 @@ pub const HistoryView = struct {
             .allocator = allocator,
             .entry_id = undefined,
             .cursor = 0,
+            .scroll = 0,
             .preview = null,
         };
     }
@@ -45,6 +47,7 @@ pub const HistoryView = struct {
         self.preview = null;
         self.items.clearRetainingCapacity();
         self.cursor = 0;
+        self.scroll = 0;
         self.entry_id = entry_id;
         self.active = true;
 
@@ -78,8 +81,25 @@ pub const HistoryView = struct {
         }
     }
 
+    /// Deactivate history mode, freeing the loaded preview.
     pub fn hide(self: *HistoryView) void {
+        if (self.preview) |p| p.deinit(self.allocator);
+        self.preview = null;
         self.active = false;
+    }
+
+    /// Take ownership of the current preview, leaving self.preview null.
+    /// Returns null if no preview is loaded (e.g. no items or after hide).
+    pub fn takePreview(self: *HistoryView) ?Entry {
+        const p = self.preview;
+        self.preview = null;
+        return p;
+    }
+
+    /// The hash at the current cursor position, or null if items is empty.
+    pub fn selectedHash(self: *const HistoryView) ?[20]u8 {
+        if (self.cursor >= self.items.items.len) return null;
+        return self.items.items[self.cursor].hash;
     }
 
     fn loadPreview(self: *HistoryView, db: *Database) void {
@@ -109,11 +129,7 @@ pub const HistoryView = struct {
                         self.loadPreview(db);
                     }
                 },
-                'r' => {
-                    // Restore: update the entry's HEAD to point to the selected version's hash,
-                    // reusing the selected version's content but with parent = current HEAD.
-                    return self.restore(db);
-                },
+                'r' => return self.restore(db),
                 else => {},
             },
             .down => {
@@ -162,56 +178,77 @@ pub const HistoryView = struct {
         return .restored;
     }
 
-    pub fn view(self: *const HistoryView, allocator: std.mem.Allocator) ![]const u8 {
+    /// Render the history pane into a styled box of `pane_width` × `pane_height`.
+    pub fn view(
+        self: *HistoryView,
+        allocator: std.mem.Allocator,
+        pane_width: u16,
+        pane_height: u16,
+        focused: bool,
+    ) ![]const u8 {
+        const content_w: u16 = pane_width -| 3; // 1 left-pad + 2 borders
+        const content_h: u16 = pane_height -| 2; // top + bottom borders
+        // Title (1 line) + hint (1 line) = 2 consumed.
+        const visible: usize = if (content_h > 2) @as(usize, content_h) - 2 else 1;
+
+        // Scroll to keep cursor in view.
+        if (self.cursor < self.scroll) {
+            self.scroll = self.cursor;
+        } else if (self.items.items.len > 0 and self.cursor >= self.scroll + visible) {
+            self.scroll = self.cursor - visible + 1;
+        }
+
         var buf: std.ArrayList(u8) = .{};
         defer buf.deinit(allocator);
         const w = buf.writer(allocator);
 
-        var title_s = zz.Style{};
-        title_s = title_s.bold(true);
-        try w.writeAll(try title_s.render(allocator, "Version History"));
-        try w.writeAll("\n\n");
-
-        // List of versions.
         if (self.items.items.len == 0) {
-            try w.writeAll("No history found.\n");
+            try w.writeAll("No history.");
         } else {
-            for (self.items.items, 0..) |item, i| {
+            const end = @min(self.scroll + visible, self.items.items.len);
+            for (self.scroll..end) |i| {
+                if (i > self.scroll) try w.writeByte('\n');
+                const item = self.items.items[i];
                 const selected = i == self.cursor;
+
                 var s = zz.Style{};
-                if (selected) { s = s.bold(true); s = s.fg(zz.Color.cyan()); }
-                const prefix: []const u8 = if (i == 0) " HEAD" else if (selected) "     " else "     ";
-                const line = try std.fmt.allocPrint(allocator, "{s}{s}  {s}", .{
-                    if (selected) ">" else " ",
-                    prefix,
-                    &item.label,
-                });
-                try w.writeAll(try s.render(allocator, line));
-                try w.writeByte('\n');
+                s = s.inline_style(true);
+                if (selected) {
+                    s = s.bold(true);
+                    s = s.fg(zz.Color.cyan());
+                }
+
+                const label = try std.fmt.allocPrint(
+                    allocator,
+                    "{s}  {s}",
+                    .{ if (i == 0) "HEAD" else "    ", &item.label },
+                );
+                try w.writeAll(try s.render(allocator, label));
             }
         }
 
-        // Preview of selected version.
-        if (self.preview) |p| {
-            try w.writeByte('\n');
-            var sep_s = zz.Style{};
-            sep_s = sep_s.dim(true);
-            try w.writeAll(try sep_s.render(allocator, "─── Preview ───────────────────"));
-            try w.writeByte('\n');
-            try w.writeAll(try std.fmt.allocPrint(allocator, "Title:    {s}\n", .{p.title}));
-            try w.writeAll(try std.fmt.allocPrint(allocator, "Username: {s}\n", .{p.username}));
-            try w.writeAll(try std.fmt.allocPrint(allocator, "URL:      {s}\n", .{p.url}));
-        }
-
-        // Help bar.
+        // Help hint.
         try w.writeByte('\n');
         var hint_s = zz.Style{};
         hint_s = hint_s.dim(true);
-        try w.writeAll(try hint_s.render(allocator, "j/k: navigate  r: restore this version  Esc: close"));
+        try w.writeAll(try hint_s.render(allocator, "j/k: nav  r: restore  Esc: close"));
+
+        // Prepend the styled title row.
+        var title_s = zz.Style{};
+        title_s = title_s.bold(true);
+        title_s = title_s.inline_style(true);
+        const title_line = try title_s.render(allocator, "History");
+        const content = try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ title_line, buf.items });
 
         var box_s = zz.Style{};
-        box_s = box_s.borderAll(zz.Border.rounded);
-        box_s = box_s.paddingAll(1);
-        return box_s.render(allocator, buf.items);
+        if (focused) {
+            box_s = box_s.borderAll(zz.Border.thick).borderForeground(zz.Color.cyan());
+        } else {
+            box_s = box_s.borderAll(zz.Border.rounded);
+        }
+        box_s = box_s.paddingLeft(1);
+        box_s = box_s.width(content_w);
+        box_s = box_s.height(content_h);
+        return box_s.render(allocator, content);
     }
 };
