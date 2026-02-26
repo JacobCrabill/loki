@@ -260,6 +260,21 @@ pub const Viewer = struct {
         }
     }
 
+    pub fn getHints(self: *const Viewer) []const u8 {
+        if (self.generator.active) return self.generator.getHints();
+        if (self.entry == null and !self.is_new) return "Tab: switch  q: quit";
+        return switch (self.mode) {
+            .edit => if (self.field_cursor == .notes)
+                "Esc: stop editing"
+            else
+                "Enter/Esc: stop editing",
+            .view => if (self.isModified())
+                "j/k: nav  e: edit  s: save  h: toggle pw  g: gen  y: copy  H: history"
+            else
+                "j/k: nav  e: edit  h: pw  g: gen  y: copy  H: history  Tab: switch  q: quit",
+        };
+    }
+
     pub fn handleKey(self: *Viewer, key: zz.KeyEvent, _db: anytype) Signal {
         _ = _db;
         // Generator intercepts all keys when active.
@@ -413,22 +428,8 @@ pub const Viewer = struct {
                 }
             }
 
-            // Help bar.
-            try w.writeByte('\n');
-            var hint_s = zz.Style{};
-            hint_s = hint_s.dim(true);
-            const hints: []const u8 = if (editing)
-                "Enter/Esc: stop editing   s: save"
-            else if (self.isModified())
-                "j/k: nav  e: edit  s: save  h: toggle pw  g: gen pw  y: copy  H: history"
-            else
-                "j/k: nav  e: edit  h: pw  g: gen  y: copy  H: history  Tab: switch  q: quit";
-            try w.writeAll(try hint_s.render(allocator, hints));
         } else {
-            try w.writeAll("No entry selected.\n\n");
-            var dim_s = zz.Style{};
-            dim_s = dim_s.dim(true);
-            try w.writeAll(try dim_s.render(allocator, "Select an entry in the browser pane.\nTab: switch pane  n: new entry  q: quit"));
+            try w.writeAll("No entry selected.\n\nSelect an entry in the browser pane.");
         }
 
         const content_w: u16 = pane_width -| 4; // 1 left-pad + 2 borders + (?)1 right-pad(?)

@@ -205,6 +205,11 @@ pub const Browser = struct {
         return self.rows.items[self.cursor].path;
     }
 
+    pub fn getHints(self: *const Browser) []const u8 {
+        _ = self;
+        return "j/k: nav  n: new  Tab: switch  q: quit";
+    }
+
     /// Render the browser pane into a styled box of `pane_width` × `pane_height`.
     pub fn view(
         self: *Browser,

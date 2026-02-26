@@ -180,6 +180,11 @@ pub const HistoryView = struct {
         return .restored;
     }
 
+    pub fn getHints(self: *const HistoryView) []const u8 {
+        _ = self;
+        return "j/k: nav  r: restore  Esc: close";
+    }
+
     /// Render the history pane into a styled box of `pane_width` × `pane_height`.
     pub fn view(
         self: *HistoryView,
@@ -190,8 +195,8 @@ pub const HistoryView = struct {
     ) ![]const u8 {
         const content_w: u16 = pane_width -| 3; // 1 left-pad + 2 borders
         const content_h: u16 = pane_height -| 2; // top + bottom borders
-        // Title (1 line) + hint (1 line) = 2 consumed.
-        const visible: usize = if (content_h > 2) @as(usize, content_h) - 2 else 1;
+        // Title consumes 1 line.
+        const visible: usize = if (content_h > 1) @as(usize, content_h) - 1 else 1;
 
         // Scroll to keep cursor in view.
         if (self.cursor < self.scroll) {
@@ -228,12 +233,6 @@ pub const HistoryView = struct {
                 try w.writeAll(try s.render(allocator, label));
             }
         }
-
-        // Help hint.
-        try w.writeByte('\n');
-        var hint_s = zz.Style{};
-        hint_s = hint_s.dim(true);
-        try w.writeAll(try hint_s.render(allocator, "j/k: nav  r: restore  Esc: close"));
 
         // Prepend the styled title row.
         var title_s = zz.Style{};

@@ -167,6 +167,11 @@ pub const Generator = struct {
         }
     }
 
+    pub fn getHints(self: *const Generator) []const u8 {
+        _ = self;
+        return "j/k: nav  Space/Enter: toggle  r: regen  Esc: cancel";
+    }
+
     pub fn view(self: *const Generator, allocator: std.mem.Allocator) ![]const u8 {
         var buf: std.ArrayList(u8) = .{};
         defer buf.deinit(allocator);
@@ -203,11 +208,6 @@ pub const Generator = struct {
         if (accept_sel) { accept_s = accept_s.bold(true); accept_s = accept_s.fg(zz.Color.green()); }
         try w.writeAll(try accept_s.render(allocator, if (accept_sel) "> [ Use this password ]" else "  [ Use this password ]"));
         try w.writeByte('\n');
-
-        try w.writeByte('\n');
-        var hint_s = zz.Style{};
-        hint_s = hint_s.dim(true);
-        try w.writeAll(try hint_s.render(allocator, "j/k: navigate  Space/Enter: toggle/select  r: regenerate  Esc: cancel"));
 
         var box_s = zz.Style{};
         box_s = box_s.borderAll(zz.Border.rounded);

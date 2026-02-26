@@ -302,24 +302,43 @@ fn viewMain(
     term_width: u16,
     term_height: u16,
 ) ![]const u8 {
-    const content_height: u16 = if (term_height > 2) term_height - 1 else 1;
+    // Reserve 1 row for the status line; panes fill the rest.
+    const pane_height: u16 = if (term_height > 1) term_height - 1 else 1;
     const browser_width: u16 = @max(20, term_width / 3);
     const viewer_width: u16 = term_width -| browser_width;
 
     // When in history mode, show history list as the left pane.
     const left_raw = if (m.history.active)
-        try m.history.view(allocator, browser_width, content_height, true)
+        try m.history.view(allocator, browser_width, pane_height, true)
     else
-        try m.browser.view(allocator, browser_width, content_height, m.active_pane == .browser);
+        try m.browser.view(allocator, browser_width, pane_height, m.active_pane == .browser);
     // Viewer shows focused=false while in history mode (history has focus).
-    const viewer_raw = try m.viewer.view(allocator, viewer_width, content_height, !m.history.active and m.active_pane == .viewer);
-    const panes = try zz.joinHorizontal(allocator, &.{ left_raw, viewer_raw });
+    const viewer_raw = try m.viewer.view(allocator, viewer_width, pane_height, !m.history.active and m.active_pane == .viewer);
+
+    // Pad each pane to exactly pane_height rows. The zigzag style renderer
+    // silently discards the height() constraint, so without this the panes
+    // can be shorter than the terminal and the status line floats up.
+    const left_padded = try zz.placeVertical(allocator, pane_height, .top, left_raw);
+    const viewer_padded = try zz.placeVertical(allocator, pane_height, .top, viewer_raw);
+    const panes = try zz.joinHorizontal(allocator, &.{ left_padded, viewer_padded });
 
     const pane_label: []const u8 = if (m.active_pane == .browser) "[browser]" else "[viewer]";
-    const mod_label: []const u8 = if (m.viewer.isModified()) "  [modified]" else "";
+    const mod_label: []const u8 = if (m.viewer.isModified()) " [modified]" else "";
+
+    const hints: []const u8 = if (m.history.active)
+        m.history.getHints()
+    else switch (m.active_pane) {
+        .browser => m.browser.getHints(),
+        .viewer => m.viewer.getHints(),
+    };
+
     var status_s = zz.Style{};
     status_s = status_s.dim(true);
-    const status_text = try std.fmt.allocPrint(allocator, " {s}  {s}{s}", .{ g_db_path, pane_label, mod_label });
+    const status_text = try std.fmt.allocPrint(
+        allocator,
+        " {s}  {s}{s}  │  {s}",
+        .{ g_db_path, pane_label, mod_label, hints },
+    );
     const status = try status_s.render(allocator, status_text);
 
     return std.fmt.allocPrint(allocator, "{s}\n{s}", .{ panes, status });
