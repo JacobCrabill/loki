@@ -1,7 +1,7 @@
 const std = @import("std");
 
-/// Magic bytes + version identifying PazzMan index files.
-const MAGIC = "PZMIDX\x00\x02";
+/// Magic bytes + version identifying Loki index files.
+const MAGIC = "LOKIIDX\x00";
 
 /// A single record in the index mapping a stable entry ID to its current HEAD.
 pub const IndexEntry = struct {
@@ -42,7 +42,7 @@ pub const Index = struct {
         self.entries.deinit(self.allocator);
     }
 
-    /// Parse an index from already-loaded bytes (the PZMIDX binary format).
+    /// Parse an index from already-loaded bytes (the LOKIIDX binary format).
     /// Used by the database layer so it can decrypt before parsing.
     pub fn fromBytes(allocator: std.mem.Allocator, bytes: []const u8) !Index {
         var idx = Index.init(allocator);
@@ -86,7 +86,7 @@ pub const Index = struct {
         return idx;
     }
 
-    /// Serialize the index to `writer` in PZMIDX binary format.
+    /// Serialize the index to `writer` in LOKIIDX binary format.
     /// Used by the database layer so it can encrypt after serializing.
     pub fn writeTo(self: *const Index, writer: anytype) !void {
         try writer.writeAll(MAGIC);

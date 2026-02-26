@@ -1,3 +1,3 @@
-# PazzMan: Simple TUI Password Manager
+# Loki: Simple TUI Password Manager
 
 WIP

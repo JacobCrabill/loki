@@ -1,5 +1,5 @@
 const std = @import("std");
-const app = @import("pazzman").tui.app;
+const app = @import("loki").tui.app;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -10,7 +10,7 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     if (args.len < 2) {
-        std.debug.print("Usage: pazzman <database-path>\n", .{});
+        std.debug.print("Usage: loki <database-path>\n", .{});
         std.process.exit(1);
     }
 

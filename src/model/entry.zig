@@ -18,7 +18,7 @@ pub const Entry = struct {
     password: []const u8,
     notes: []const u8,
 
-    /// Serialize the entry into the given writer in PazzMan binary format.
+    /// Serialize the entry into the given writer in Loki binary format.
     pub fn serialize(self: Entry, writer: anytype) !void {
         if (self.parent_hash) |h| {
             try writer.writeByte(1);

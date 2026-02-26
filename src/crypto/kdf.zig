@@ -13,7 +13,7 @@ pub const default_params: Params = Params.owasp_2id;
 pub const test_params: Params = .{ .t = 1, .m = 8, .p = 1 };
 
 /// Known plaintext used to verify the derived key. Must be exactly 16 bytes.
-const verify_plaintext = "PAZZMANVERIFY!!!";
+const verify_plaintext = "LOKI_HDR_VERIFY!";
 comptime {
     std.debug.assert(verify_plaintext.len == 16);
 }
@@ -35,7 +35,7 @@ pub const Header = struct {
 ///   4  bytes  argon2 p (u32 LE, value fits in u24)
 ///  32  bytes  salt
 ///  44  bytes  verify_blob
-const MAGIC = "PZMDB\x00\x00\x01";
+const MAGIC = "LOKIDB\x00\x01";
 const header_size = 8 + 4 + 4 + 4 + 32 + verify_blob_len; // 96
 
 /// Derive a 32-byte encryption key from `password` using Argon2id.

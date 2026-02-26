@@ -6,20 +6,20 @@ pub fn build(b: *std.Build) void {
 
     const zigzag = b.dependency("zigzag", .{ .optimize = optimize, .target = target });
 
-    const mod = b.addModule("pazzman", .{
+    const mod = b.addModule("loki", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
     mod.addImport("zigzag", zigzag.module("zigzag"));
 
     const exe = b.addExecutable(.{
-        .name = "pazzman",
+        .name = "loki",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "pazzman", .module = mod },
+                .{ .name = "loki", .module = mod },
                 .{ .name = "zigzag", .module = zigzag.module("zigzag") },
             },
         }),

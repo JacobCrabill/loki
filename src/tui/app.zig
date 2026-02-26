@@ -161,7 +161,7 @@ fn viewUnlock(
 
     var title_s = zz.Style{};
     title_s = title_s.bold(true);
-    try w.writeAll(try title_s.render(allocator, "PazzMan"));
+    try w.writeAll(try title_s.render(allocator, "Loki"));
     try w.writeAll("\n\n");
 
     const input_str = try u.input.view(allocator);
@@ -194,7 +194,7 @@ fn viewCreate(
 
     var title_s = zz.Style{};
     title_s = title_s.bold(true);
-    try w.writeAll(try title_s.render(allocator, "PazzMan — Create Database"));
+    try w.writeAll(try title_s.render(allocator, "Loki — Create Database"));
     try w.writeAll("\n\n");
 
     var path_s = zz.Style{};
