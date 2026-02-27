@@ -49,3 +49,9 @@ The TUI interface is fairly bare-bones, and was developed using the
 [`zigzag` library](https://github.com/meszmate/zigzag). At present, a user may create a new
 database, add and "move" existing entries, view the complete history of an entry, generate random
 passwords, and copy data to the clipboard for easy logins.
+
+![Editing an entry](docs/images/edit-entry.png)
+
+![Generate a password](docs/images/generate-password.png)
+
+![View an entry's history](docs/images/history-view.png)
