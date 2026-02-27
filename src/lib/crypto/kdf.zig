@@ -9,9 +9,6 @@ pub const Params = argon2.Params;
 /// Balances security and interactive unlock latency.
 pub const default_params: Params = Params.owasp_2id;
 
-/// Fast parameters for unit tests only — never use in production.
-pub const test_params: Params = .{ .t = 1, .m = 8, .p = 1 };
-
 /// Known plaintext used to verify the derived key. Must be exactly 16 bytes.
 const verify_plaintext = "LOKI_HDR_VERIFY!";
 comptime {
@@ -144,6 +141,13 @@ pub fn readHeader(dir: std.fs.Dir) !Header {
         .verify_blob = verify_blob,
     };
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+/// Fast parameters for unit tests only — never use in production.
+const test_params: Params = .{ .t = 1, .m = 8, .p = 1 };
 
 test "derive key is deterministic" {
     const allocator = std.testing.allocator;

@@ -68,7 +68,7 @@ pub const Database = struct {
         errdefer objects_dir.close();
 
         const derived_key: ?[cipher.key_length]u8 = if (password) |pw| blk: {
-            const result = try kdf.createHeader(allocator, pw, kdf.test_params);
+            const result = try kdf.createHeader(allocator, pw, kdf.default_params);
             try kdf.writeHeader(result.header, dir);
             break :blk result.key;
         } else null;
