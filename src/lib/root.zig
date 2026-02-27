@@ -13,6 +13,7 @@ pub const store = struct {
     pub const object = @import("store/object.zig");
     pub const index = @import("store/index.zig");
     pub const database = @import("store/database.zig");
+    pub const sync = @import("store/sync.zig");
 };
 
 pub const Entry = model.entry.Entry;
@@ -26,4 +27,5 @@ comptime {
     _ = store.object;
     _ = store.index;
     _ = store.database;
+    _ = store.sync;
 }
