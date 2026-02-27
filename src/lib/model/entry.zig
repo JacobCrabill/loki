@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const SHA1_SIZE = 20;
+
 /// A single version of a password entry.
 ///
 /// `Entry` values returned from `deserialize` own their string fields and must
@@ -7,7 +9,7 @@ const std = @import("std");
 /// literals) must NOT be passed to `deinit`.
 pub const Entry = struct {
     /// SHA-1 hash of the previous version, or null for the genesis version.
-    parent_hash: ?[20]u8,
+    parent_hash: ?[SHA1_SIZE]u8,
     /// Forward-slash-separated folder path, e.g. "Work/Acme-Inc". Empty string
     /// means the entry lives at the root.
     path: []const u8,
@@ -39,8 +41,8 @@ pub const Entry = struct {
     /// All string fields are allocated with `allocator`; free with `deinit`.
     pub fn deserialize(allocator: std.mem.Allocator, reader: anytype) !Entry {
         const has_parent = try reader.readByte();
-        const parent_hash: ?[20]u8 = if (has_parent == 1) blk: {
-            var h: [20]u8 = undefined;
+        const parent_hash: ?[SHA1_SIZE]u8 = if (has_parent == 1) blk: {
+            var h: [SHA1_SIZE]u8 = undefined;
             try reader.readNoEof(&h);
             break :blk h;
         } else null;
