@@ -18,6 +18,14 @@ pub const SyncResult = struct {
     conflicts: usize = 0,
 };
 
+/// A pair of diverged HEADs for the same entry.  Stored in the local database's
+/// `conflicts` file so the TUI can offer interactive resolution later.
+pub const ConflictEntry = struct {
+    entry_id: [20]u8,
+    local_hash: [20]u8,
+    remote_hash: [20]u8,
+};
+
 // Deferred index mutation to avoid invalidating iterators.
 const Pending = struct {
     entry_id: [20]u8,
@@ -32,18 +40,39 @@ const Pending = struct {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Walk parent_hash chain from `descendant` looking for `ancestor`.
-/// Returns true if found (including when they are equal).
-/// Uses `db` to load objects; returns false on read error or depth > 1000.
-fn isAncestor(db: *Database, ancestor_hash: [20]u8, descendant_hash: [20]u8) bool {
-    var current = descendant_hash;
-    var depth: usize = 0;
-    while (depth < 1000) : (depth += 1) {
-        if (std.mem.eql(u8, &current, &ancestor_hash)) return true;
-        const e = db.getVersion(current) catch return false;
-        const parent = e.parent_hash;
-        e.deinit(db.allocator);
-        current = parent orelse return false;
+/// BFS from `descendant_hash` over both parent_hash and merge_parent_hash edges,
+/// looking for `ancestor_hash`.  Returns true if found (including equal hashes).
+/// Uses `db` to load objects; returns false on read error or after visiting
+/// more than 2000 nodes (cycle / very deep history guard).
+fn isAncestor(
+    allocator: std.mem.Allocator,
+    db: *Database,
+    ancestor_hash: [20]u8,
+    descendant_hash: [20]u8,
+) bool {
+    if (std.mem.eql(u8, &ancestor_hash, &descendant_hash)) return true;
+
+    // Work list: hashes yet to be explored.
+    var queue: std.ArrayList([20]u8) = .{};
+    defer queue.deinit(allocator);
+    queue.append(allocator, descendant_hash) catch return false;
+
+    var visited: usize = 0;
+    while (queue.items.len > 0 and visited < 2000) {
+        const current = queue.orderedRemove(0);
+        visited += 1;
+
+        const e = db.getVersion(current) catch continue;
+        defer e.deinit(db.allocator);
+
+        if (e.parent_hash) |ph| {
+            if (std.mem.eql(u8, &ph, &ancestor_hash)) return true;
+            queue.append(allocator, ph) catch {};
+        }
+        if (e.merge_parent_hash) |mph| {
+            if (std.mem.eql(u8, &mph, &ancestor_hash)) return true;
+            queue.append(allocator, mph) catch {};
+        }
     }
     return false;
 }
@@ -101,12 +130,14 @@ fn copyObjectsOneWay(
 /// AFTER copying all objects bidirectionally so ancestor checks work for both
 /// sides.
 ///
+/// Detected conflicts are appended to `conflicts_out` (caller owns the list).
 /// Titles and paths in the result come from whichever side has the newer HEAD.
 pub fn mergeIndexes(
     allocator: std.mem.Allocator,
     obj_db: *Database,
     local_idx: *Index,
     remote_idx: *Index,
+    conflicts_out: *std.ArrayList(ConflictEntry),
 ) !SyncResult {
     var result = SyncResult{};
 
@@ -120,7 +151,7 @@ pub fn mergeIndexes(
         if (remote_idx.find(le.entry_id)) |re| {
             if (std.mem.eql(u8, &le.head_hash, &re.head_hash)) continue; // in sync
 
-            if (isAncestor(obj_db, le.head_hash, re.head_hash)) {
+            if (isAncestor(allocator, obj_db, le.head_hash, re.head_hash)) {
                 // Remote is ahead → fast-forward local to remote HEAD.
                 try local_pending.append(allocator, .{
                     .entry_id = le.entry_id,
@@ -130,7 +161,7 @@ pub fn mergeIndexes(
                     .kind = .update,
                 });
                 result.fast_forwarded += 1;
-            } else if (isAncestor(obj_db, re.head_hash, le.head_hash)) {
+            } else if (isAncestor(allocator, obj_db, re.head_hash, le.head_hash)) {
                 // Local is ahead → fast-forward remote to local HEAD.
                 try remote_pending.append(allocator, .{
                     .entry_id = le.entry_id,
@@ -141,7 +172,12 @@ pub fn mergeIndexes(
                 });
                 result.remote_advanced += 1;
             } else {
-                // True divergence: keep local HEAD, report conflict.
+                // True divergence: keep local HEAD, record conflict for TUI resolution.
+                try conflicts_out.append(allocator, .{
+                    .entry_id = le.entry_id,
+                    .local_hash = le.head_hash,
+                    .remote_hash = re.head_hash,
+                });
                 result.conflicts += 1;
             }
         } else {
@@ -194,16 +230,19 @@ pub fn mergeIndexes(
 /// Both databases must share the same encryption key (created from the same
 /// `header` file). After this call both indices are merged; call `db.save()`
 /// on each to persist the result.
+///
+/// Detected conflicts are appended to `conflicts_out` (caller owns the list).
 pub fn syncDatabases(
     allocator: std.mem.Allocator,
     local_db: *Database,
     remote_db: *Database,
+    conflicts_out: *std.ArrayList(ConflictEntry),
 ) !SyncResult {
     // Copy objects first so ancestor chain walks have full history on both sides.
     const pulled = try copyObjectsOneWay(allocator, remote_db, local_db);
     const pushed = try copyObjectsOneWay(allocator, local_db, remote_db);
 
-    var result = try mergeIndexes(allocator, local_db, &local_db.index, &remote_db.index);
+    var result = try mergeIndexes(allocator, local_db, &local_db.index, &remote_db.index, conflicts_out);
     result.objects_pulled = pulled;
     result.objects_pushed = pushed;
     return result;
@@ -246,7 +285,9 @@ test "sync two disjoint plaintext databases" {
         .notes = "",
     });
 
-    const result = try syncDatabases(allocator, &local_db, &remote_db);
+    var conflicts = std.ArrayList(ConflictEntry){};
+    defer conflicts.deinit(allocator);
+    const result = try syncDatabases(allocator, &local_db, &remote_db, &conflicts);
 
     try std.testing.expectEqual(@as(usize, 1), result.objects_pulled);
     try std.testing.expectEqual(@as(usize, 1), result.objects_pushed);
@@ -283,7 +324,9 @@ test "sync: remote ahead fast-forwards local" {
     const v1_hash = local_db.listEntries()[0].head_hash;
 
     // Sync so remote has the genesis.
-    _ = try syncDatabases(allocator, &local_db, &remote_db);
+    var conflicts1 = std.ArrayList(ConflictEntry){};
+    defer conflicts1.deinit(allocator);
+    _ = try syncDatabases(allocator, &local_db, &remote_db, &conflicts1);
 
     // Advance remote by one version.
     _ = try remote_db.updateEntry(eid, .{
@@ -298,7 +341,9 @@ test "sync: remote ahead fast-forwards local" {
     });
 
     // Second sync: local should fast-forward to v2.
-    const result2 = try syncDatabases(allocator, &local_db, &remote_db);
+    var conflicts2 = std.ArrayList(ConflictEntry){};
+    defer conflicts2.deinit(allocator);
+    const result2 = try syncDatabases(allocator, &local_db, &remote_db, &conflicts2);
     try std.testing.expectEqual(@as(usize, 1), result2.fast_forwarded);
     try std.testing.expectEqual(@as(usize, 0), result2.conflicts);
 
@@ -331,7 +376,9 @@ test "sync: diverged entries produce conflict" {
     const v0_hash = local_db.listEntries()[0].head_hash;
 
     // Sync genesis to remote.
-    _ = try syncDatabases(allocator, &local_db, &remote_db);
+    var conflicts_init = std.ArrayList(ConflictEntry){};
+    defer conflicts_init.deinit(allocator);
+    _ = try syncDatabases(allocator, &local_db, &remote_db, &conflicts_init);
 
     // Both sides independently edit the same entry.
     _ = try local_db.updateEntry(eid, .{
@@ -355,12 +402,103 @@ test "sync: diverged entries produce conflict" {
         .notes = "",
     });
 
-    const result = try syncDatabases(allocator, &local_db, &remote_db);
+    var conflicts = std.ArrayList(ConflictEntry){};
+    defer conflicts.deinit(allocator);
+    const result = try syncDatabases(allocator, &local_db, &remote_db, &conflicts);
     try std.testing.expectEqual(@as(usize, 1), result.conflicts);
     try std.testing.expectEqual(@as(usize, 0), result.fast_forwarded);
+    try std.testing.expectEqual(@as(usize, 1), conflicts.items.len);
+    try std.testing.expectEqual(eid, conflicts.items[0].entry_id);
 
     // Local HEAD is retained.
     const local_entry = try local_db.getEntry(eid);
     defer local_entry.deinit(allocator);
     try std.testing.expectEqualStrings("local-edit", local_entry.password);
+}
+
+test "sync: merge commit with merge_parent_hash converges on next sync" {
+    // After conflict resolution the TUI creates a merge commit on local with
+    //   parent_hash      = local_head  (the local-edit version)
+    //   merge_parent_hash = remote_hash (the remote-edit version)
+    // On the next sync, isAncestor should find remote_hash via the merge edge
+    // and fast-forward remote to the merged commit — not conflict again.
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var local_db = try Database.create(allocator, tmp.dir, "local", null);
+    defer local_db.deinit();
+    var remote_db = try Database.create(allocator, tmp.dir, "remote", null);
+    defer remote_db.deinit();
+
+    // Genesis + initial sync.
+    const eid = try local_db.createEntry(.{
+        .parent_hash = null,
+        .path = "",
+        .title = "Entry",
+        .description = "",
+        .url = "",
+        .username = "u",
+        .password = "v0",
+        .notes = "",
+    });
+    const v0_hash = local_db.listEntries()[0].head_hash;
+    var c0 = std.ArrayList(ConflictEntry){};
+    defer c0.deinit(allocator);
+    _ = try syncDatabases(allocator, &local_db, &remote_db, &c0);
+
+    // Diverge: both sides edit independently.
+    const local_head = try local_db.updateEntry(eid, .{
+        .parent_hash = v0_hash,
+        .path = "",
+        .title = "Entry",
+        .description = "",
+        .url = "",
+        .username = "u",
+        .password = "local-edit",
+        .notes = "",
+    });
+    const remote_head = try remote_db.updateEntry(eid, .{
+        .parent_hash = v0_hash,
+        .path = "",
+        .title = "Entry",
+        .description = "",
+        .url = "",
+        .username = "u",
+        .password = "remote-edit",
+        .notes = "",
+    });
+
+    // First sync: conflict detected.
+    var c1 = std.ArrayList(ConflictEntry){};
+    defer c1.deinit(allocator);
+    _ = try syncDatabases(allocator, &local_db, &remote_db, &c1);
+    try std.testing.expectEqual(@as(usize, 1), c1.items.len);
+
+    // Simulate TUI resolution: create merge commit on local with both parents.
+    // Use setHead directly (bypassing parent-hash validation) to place merged HEAD.
+    const merged_hash = try local_db.updateEntry(eid, .{
+        .parent_hash = local_head,
+        .merge_parent_hash = remote_head,
+        .path = "",
+        .title = "Entry",
+        .description = "",
+        .url = "",
+        .username = "u",
+        .password = "merged",
+        .notes = "",
+    });
+    _ = merged_hash;
+
+    // Second sync: remote should fast-forward to merged (no new conflict).
+    var c2 = std.ArrayList(ConflictEntry){};
+    defer c2.deinit(allocator);
+    const result2 = try syncDatabases(allocator, &local_db, &remote_db, &c2);
+    try std.testing.expectEqual(@as(usize, 0), c2.items.len);
+    try std.testing.expectEqual(@as(usize, 0), result2.conflicts);
+    try std.testing.expectEqual(@as(usize, 1), result2.remote_advanced);
+
+    const remote_entry = try remote_db.getEntry(eid);
+    defer remote_entry.deinit(allocator);
+    try std.testing.expectEqualStrings("merged", remote_entry.password);
 }

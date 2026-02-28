@@ -10,6 +10,10 @@ const SHA1_SIZE = 20;
 pub const Entry = struct {
     /// SHA-1 hash of the previous version, or null for the genesis version.
     parent_hash: ?[SHA1_SIZE]u8,
+    /// SHA-1 hash of the other branch merged into this version (conflict
+    /// resolution commits only). Enables `isAncestor` to follow both branches
+    /// so the next sync fast-forwards the remote rather than re-conflicting.
+    merge_parent_hash: ?[SHA1_SIZE]u8 = null,
     /// Forward-slash-separated folder path, e.g. "Work/Acme-Inc". Empty string
     /// means the entry lives at the root.
     path: []const u8,
@@ -21,13 +25,16 @@ pub const Entry = struct {
     notes: []const u8,
 
     /// Serialize the entry into the given writer in Loki binary format.
+    ///
+    /// Flags byte layout (bit 0 = has parent_hash, bit 1 = has merge_parent_hash).
+    /// Old objects used raw 0/1 for this byte; bit 1 was always 0, so they
+    /// deserialize correctly with merge_parent_hash = null.
     pub fn serialize(self: Entry, writer: anytype) !void {
-        if (self.parent_hash) |h| {
-            try writer.writeByte(1);
-            try writer.writeAll(&h);
-        } else {
-            try writer.writeByte(0);
-        }
+        const flags: u8 = (if (self.parent_hash != null) @as(u8, 1) else 0) |
+            (if (self.merge_parent_hash != null) @as(u8, 2) else 0);
+        try writer.writeByte(flags);
+        if (self.parent_hash) |h| try writer.writeAll(&h);
+        if (self.merge_parent_hash) |h| try writer.writeAll(&h);
         try writeString(writer, self.path);
         try writeString(writer, self.title);
         try writeString(writer, self.description);
@@ -40,8 +47,13 @@ pub const Entry = struct {
     /// Deserialize an entry from the given reader.
     /// All string fields are allocated with `allocator`; free with `deinit`.
     pub fn deserialize(allocator: std.mem.Allocator, reader: anytype) !Entry {
-        const has_parent = try reader.readByte();
-        const parent_hash: ?[SHA1_SIZE]u8 = if (has_parent == 1) blk: {
+        const flags = try reader.readByte();
+        const parent_hash: ?[SHA1_SIZE]u8 = if (flags & 1 != 0) blk: {
+            var h: [SHA1_SIZE]u8 = undefined;
+            try reader.readNoEof(&h);
+            break :blk h;
+        } else null;
+        const merge_parent_hash: ?[SHA1_SIZE]u8 = if (flags & 2 != 0) blk: {
             var h: [SHA1_SIZE]u8 = undefined;
             try reader.readNoEof(&h);
             break :blk h;
@@ -64,6 +76,7 @@ pub const Entry = struct {
 
         return Entry{
             .parent_hash = parent_hash,
+            .merge_parent_hash = merge_parent_hash,
             .path = path,
             .title = title,
             .description = description,
@@ -97,6 +110,38 @@ fn readString(allocator: std.mem.Allocator, reader: anytype) ![]u8 {
     errdefer allocator.free(buf);
     try reader.readNoEof(buf);
     return buf;
+}
+
+test "roundtrip with merge_parent_hash" {
+    const allocator = std.testing.allocator;
+    var parent: [20]u8 = undefined;
+    @memset(&parent, 0xcc);
+    var merge_parent: [20]u8 = undefined;
+    @memset(&merge_parent, 0xdd);
+
+    const original = Entry{
+        .parent_hash = parent,
+        .merge_parent_hash = merge_parent,
+        .path = "Work",
+        .title = "Merged",
+        .description = "",
+        .url = "",
+        .username = "u",
+        .password = "p",
+        .notes = "",
+    };
+
+    var buf: std.ArrayList(u8) = .{};
+    defer buf.deinit(allocator);
+    try original.serialize(buf.writer(allocator));
+
+    var stream = std.io.fixedBufferStream(buf.items);
+    const loaded = try Entry.deserialize(allocator, stream.reader());
+    defer loaded.deinit(allocator);
+
+    try std.testing.expectEqual(parent, loaded.parent_hash.?);
+    try std.testing.expectEqual(merge_parent, loaded.merge_parent_hash.?);
+    try std.testing.expectEqualStrings("Merged", loaded.title);
 }
 
 test "roundtrip without parent hash" {

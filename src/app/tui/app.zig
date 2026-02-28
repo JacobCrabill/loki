@@ -4,9 +4,11 @@ const loki = @import("loki");
 
 const IndexEntry = loki.store.index.IndexEntry;
 const Database = loki.Database;
+const ConflictEntry = loki.store.sync.ConflictEntry;
 const Browser = @import("browser.zig").Browser;
 const Viewer = @import("viewer.zig").Viewer;
 const HistoryView = @import("history_view.zig").HistoryView;
+const ConflictView = @import("conflict_view.zig").ConflictView;
 
 /// Set this before calling `run()`.
 pub var g_db_path: []const u8 = "";
@@ -15,7 +17,7 @@ pub var g_db_path: []const u8 = "";
 // Internal types
 // =============================================================================
 
-const Pane = enum { browser, viewer };
+const Pane = enum { browser, viewer, conflict };
 
 const UnlockScreen = struct {
     input: zz.TextInput,
@@ -52,9 +54,13 @@ const MainScreen = struct {
     browser: Browser,
     viewer: Viewer,
     history: HistoryView,
+    conflict_view: ConflictView,
+    /// Number of unresolved conflicts (persists after conflict view is closed).
+    pending_conflicts: usize,
     active_pane: Pane,
 
     fn deinit(self: *MainScreen) void {
+        self.conflict_view.deinit();
         self.history.deinit();
         self.viewer.deinit();
         self.browser.deinit();
@@ -99,6 +105,8 @@ fn makeMainScreen(pa: std.mem.Allocator, db: Database) !MainScreen {
         .browser = Browser.init(pa),
         .viewer = Viewer.init(pa),
         .history = HistoryView.init(pa),
+        .conflict_view = ConflictView.init(pa),
+        .pending_conflicts = 0,
         .active_pane = .browser,
     };
     try screen.browser.populate(screen.db.listEntries());
@@ -107,6 +115,16 @@ fn makeMainScreen(pa: std.mem.Allocator, db: Database) !MainScreen {
         const entry = screen.db.getEntry(eid) catch null;
         screen.viewer.setEntry(eid, head_hash, entry);
     }
+
+    // Load any pending conflicts saved by a previous `loki sync`.
+    const conflicts = screen.db.loadConflicts(pa) catch &.{};
+    defer pa.free(conflicts);
+    if (conflicts.len > 0) {
+        screen.conflict_view.load(&screen.db, conflicts);
+        screen.pending_conflicts = conflicts.len;
+        screen.active_pane = .conflict;
+    }
+
     return screen;
 }
 
@@ -304,6 +322,23 @@ fn viewMain(
 ) ![]const u8 {
     // Reserve 1 row for the status line; panes fill the rest.
     const pane_height: u16 = if (term_height > 1) term_height - 1 else 1;
+
+    // Conflict view takes the full width.
+    if (m.active_pane == .conflict) {
+        const conflict_raw = try m.conflict_view.view(allocator, term_width, pane_height);
+        const conflict_padded = try zz.placeVertical(allocator, pane_height, .top, conflict_raw);
+
+        var status_s = zz.Style{};
+        status_s = status_s.dim(true);
+        const status_text = try std.fmt.allocPrint(
+            allocator,
+            " {s}  [conflict]  │  {s}",
+            .{ g_db_path, m.conflict_view.getHints() },
+        );
+        const status = try status_s.render(allocator, status_text);
+        return std.fmt.allocPrint(allocator, "{s}\n{s}", .{ conflict_padded, status });
+    }
+
     const browser_width: u16 = @max(20, term_width / 3);
     const viewer_width: u16 = term_width -| browser_width;
 
@@ -325,20 +360,49 @@ fn viewMain(
     const pane_label: []const u8 = if (m.active_pane == .browser) "[browser]" else "[viewer]";
     const mod_label: []const u8 = if (m.viewer.isModified()) " [modified]" else "";
 
+    // Conflict banner: shown when conflicts are pending but view is closed.
+    const conflict_banner: []const u8 = if (m.pending_conflicts > 0) blk: {
+        var s = zz.Style{};
+        s = s.fg(zz.Color.yellow());
+        s = s.bold(true);
+        const text = try std.fmt.allocPrint(
+            allocator,
+            "[{d} conflict(s) — press C]",
+            .{m.pending_conflicts},
+        );
+        defer allocator.free(text);
+        break :blk try s.render(allocator, text);
+    } else "";
+
     const hints: []const u8 = if (m.history.active)
         m.history.getHints()
     else switch (m.active_pane) {
         .browser => m.browser.getHints(),
         .viewer => m.viewer.getHints(),
+        .conflict => unreachable, // handled above
     };
+
+    // Append "C: conflicts" to hints when conflicts are pending.
+    const full_hints = if (m.pending_conflicts > 0)
+        try std.fmt.allocPrint(allocator, "{s}  C: conflicts", .{hints})
+    else
+        try allocator.dupe(u8, hints);
+    defer allocator.free(full_hints);
 
     var status_s = zz.Style{};
     status_s = status_s.dim(true);
-    const status_text = try std.fmt.allocPrint(
-        allocator,
-        " {s}  {s}{s}  │  {s}",
-        .{ g_db_path, pane_label, mod_label, hints },
-    );
+    const status_text = if (m.pending_conflicts > 0)
+        try std.fmt.allocPrint(
+            allocator,
+            " {s}  {s}  {s}{s}  │  {s}",
+            .{ g_db_path, conflict_banner, pane_label, mod_label, full_hints },
+        )
+    else
+        try std.fmt.allocPrint(
+            allocator,
+            " {s}  {s}{s}  │  {s}",
+            .{ g_db_path, pane_label, mod_label, full_hints },
+        );
     const status = try status_s.render(allocator, status_text);
 
     return std.fmt.allocPrint(allocator, "{s}\n{s}", .{ panes, status });
@@ -535,6 +599,38 @@ pub const Model = struct {
                 }
             },
             .main => |*m| {
+                // Conflict view intercepts all keys when active.
+                if (m.active_pane == .conflict) {
+                    const sig = m.conflict_view.handleKey(k, &m.db);
+                    switch (sig) {
+                        .none => {},
+                        .closed => {
+                            // User deferred: keep banner, return to browser.
+                            m.pending_conflicts = m.conflict_view.pending.items.len;
+                            // Save remaining conflicts back to disk so they survive restarts.
+                            if (m.pending_conflicts > 0) {
+                                m.db.saveConflicts(m.conflict_view.pending.items) catch {};
+                            } else {
+                                m.db.clearConflicts();
+                            }
+                            m.active_pane = .browser;
+                        },
+                        .all_resolved => {
+                            m.pending_conflicts = 0;
+                            m.db.clearConflicts();
+                            m.browser.populate(m.db.listEntries()) catch {};
+                            m.active_pane = .browser;
+                            // Reload viewer for currently selected entry.
+                            if (m.browser.selectedEntryId()) |eid| {
+                                const head_hash = findHeadHash(m.db.listEntries(), eid);
+                                const entry = m.db.getEntry(eid) catch null;
+                                m.viewer.setEntry(eid, head_hash, entry);
+                            }
+                        },
+                    }
+                    return .none;
+                }
+
                 // History mode intercepts all keys.
                 if (m.history.active) {
                     const sig = m.history.handleKey(k, &m.db);
@@ -574,6 +670,7 @@ pub const Model = struct {
                 }
 
                 switch (m.active_pane) {
+                    .conflict => unreachable, // handled above
                     .browser => {
                         switch (k.key) {
                             .char => |c| switch (c) {
@@ -582,6 +679,10 @@ pub const Model = struct {
                                     m.viewer.setNewEntry(m.browser.selectedPath());
                                     m.active_pane = .viewer;
                                     return .none; // key consumed; do not pass to viewer
+                                },
+                                'C' => if (m.pending_conflicts > 0) {
+                                    m.active_pane = .conflict;
+                                    return .none;
                                 },
                                 else => m.browser.handleKey(k),
                             },
@@ -599,6 +700,11 @@ pub const Model = struct {
                         }
                     },
                     .viewer => {
+                        // C re-enters conflict view when pending conflicts exist.
+                        if (k.key == .char and k.key.char == 'C' and m.pending_conflicts > 0) {
+                            m.active_pane = .conflict;
+                            return .none;
+                        }
                         const sig = m.viewer.handleKey(k, &m.db);
                         switch (sig) {
                             .none => {},

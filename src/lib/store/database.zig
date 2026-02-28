@@ -4,9 +4,11 @@ const object = @import("object.zig");
 const index_mod = @import("index.zig");
 const cipher = @import("../crypto/cipher.zig");
 const kdf = @import("../crypto/kdf.zig");
+const sync_mod = @import("sync.zig");
 
 pub const Entry = entry_mod.Entry;
 pub const IndexEntry = index_mod.IndexEntry;
+pub const ConflictEntry = sync_mod.ConflictEntry;
 
 pub const Database = struct {
     allocator: std.mem.Allocator,
@@ -170,6 +172,70 @@ pub const Database = struct {
     /// Remove an entry from the index. Objects are retained for history.
     pub fn deleteEntry(self: *Database, entry_id: [20]u8) !void {
         try self.index.removeEntry(entry_id);
+    }
+
+    /// Update just the index HEAD pointer for `entry_id` without creating a new
+    /// object.  Used by conflict resolution to fast-forward or set a resolved
+    /// merge HEAD.  Unlike `updateEntry` this does NOT validate parent_hash.
+    pub fn setHead(
+        self: *Database,
+        entry_id: [20]u8,
+        head_hash: [20]u8,
+        title: []const u8,
+        path: []const u8,
+    ) !void {
+        try self.index.updateEntry(entry_id, head_hash, title, path);
+    }
+
+    // -------------------------------------------------------------------------
+    // Conflict persistence
+    // -------------------------------------------------------------------------
+
+    /// Write pending conflicts to `db_dir/conflicts`.
+    /// Format: u32 count (little-endian) + N × 60 bytes
+    ///   (entry_id[20] + local_hash[20] + remote_hash[20]).
+    /// Hashes are not encrypted — they are non-secret identifiers.
+    pub fn saveConflicts(self: *Database, conflicts: []const ConflictEntry) !void {
+        // Serialise into a buffer then write atomically.
+        var buf: std.ArrayList(u8) = .{};
+        defer buf.deinit(self.allocator);
+        const w = buf.writer(self.allocator);
+        try w.writeInt(u32, @intCast(conflicts.len), .little);
+        for (conflicts) |c| {
+            try w.writeAll(&c.entry_id);
+            try w.writeAll(&c.local_hash);
+            try w.writeAll(&c.remote_hash);
+        }
+        const file = try self.dir.createFile("conflicts", .{});
+        defer file.close();
+        try file.writeAll(buf.items);
+    }
+
+    /// Load pending conflicts from `db_dir/conflicts`.
+    /// Returns an empty slice when the file does not exist.
+    /// Caller must free the returned slice with `allocator.free(slice)`.
+    pub fn loadConflicts(self: *Database, allocator: std.mem.Allocator) ![]ConflictEntry {
+        const raw = self.dir.readFileAlloc(allocator, "conflicts", 64 * 1024) catch |err| {
+            if (err == error.FileNotFound) return &.{};
+            return err;
+        };
+        defer allocator.free(raw);
+        if (raw.len < 4) return &.{};
+        const count = std.mem.readInt(u32, raw[0..4], .little);
+        if (raw.len < 4 + @as(usize, count) * 60) return &.{};
+        const list = try allocator.alloc(ConflictEntry, count);
+        for (list, 0..) |*c, i| {
+            const base = 4 + i * 60;
+            @memcpy(&c.entry_id, raw[base..][0..20]);
+            @memcpy(&c.local_hash, raw[base + 20 ..][0..20]);
+            @memcpy(&c.remote_hash, raw[base + 40 ..][0..20]);
+        }
+        return list;
+    }
+
+    /// Delete `db_dir/conflicts`.  No-op when the file does not exist.
+    pub fn clearConflicts(self: *Database) void {
+        self.dir.deleteFile("conflicts") catch {};
     }
 
     // -------------------------------------------------------------------------

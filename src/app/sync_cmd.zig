@@ -4,6 +4,7 @@ const loki = @import("loki");
 const Database = loki.Database;
 const sync = loki.store.sync;
 const SyncResult = sync.SyncResult;
+const ConflictEntry = sync.ConflictEntry;
 const cipher_mod = loki.crypto.cipher;
 const index_mod = loki.store.index;
 const Index = index_mod.Index;
@@ -89,7 +90,7 @@ fn printResult(allocator: std.mem.Allocator, out: std.fs.File, result: SyncResul
     if (result.conflicts > 0) {
         const conflict_line = try std.fmt.allocPrint(
             allocator,
-            "  WARNING: {d} conflict(s): local HEAD retained (inspect with H in viewer)\n",
+            "  WARNING: {d} conflict(s) — open loki to resolve interactively\n",
             .{result.conflicts},
         );
         defer allocator.free(conflict_line);
@@ -148,7 +149,10 @@ fn runLocal(
     };
     defer remote_db.deinit();
 
-    const result = try sync.syncDatabases(allocator, &local_db, &remote_db);
+    var conflicts: std.ArrayList(ConflictEntry) = .{};
+    defer conflicts.deinit(allocator);
+    const result = try sync.syncDatabases(allocator, &local_db, &remote_db, &conflicts);
+    if (conflicts.items.len > 0) try local_db.saveConflicts(conflicts.items);
     try local_db.save();
     try remote_db.save();
 
@@ -264,9 +268,12 @@ fn runSsh(
     defer remote_idx.deinit();
 
     // 6. Merge indices.
-    var result = try sync.mergeIndexes(allocator, &local_db, &local_db.index, &remote_idx);
+    var conflicts: std.ArrayList(ConflictEntry) = .{};
+    defer conflicts.deinit(allocator);
+    var result = try sync.mergeIndexes(allocator, &local_db, &local_db.index, &remote_idx, &conflicts);
     result.objects_pulled = 0; // rsync handled this; counts not available
     result.objects_pushed = 0;
+    if (conflicts.items.len > 0) try local_db.saveConflicts(conflicts.items);
 
     // 7. Save local db.
     try local_db.save();
