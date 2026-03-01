@@ -1,6 +1,7 @@
 const std = @import("std");
 const argon2 = std.crypto.pwhash.argon2;
 const cipher = @import("cipher.zig");
+const AEAD = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
 
 /// Argon2id parameters stored in the database header.
 pub const Params = argon2.Params;
@@ -22,6 +23,8 @@ pub const Header = struct {
     params: Params,
     salt: [32]u8,
     /// Encrypted blob of `verify_plaintext`: [nonce(12) | tag(16) | ct(16)].
+    /// The AEAD additional data binds magic, params, and salt to this blob,
+    /// preventing parameter downgrade attacks.
     verify_blob: [verify_blob_len]u8,
 };
 
@@ -34,6 +37,20 @@ pub const Header = struct {
 ///  44  bytes  verify_blob
 const MAGIC = "LOKIDB\x00\x01";
 const header_size = 8 + 4 + 4 + 4 + 32 + verify_blob_len; // 96
+
+/// AEAD additional data: the non-verify_blob portion of the header (52 bytes).
+/// Binding these fields to the verify_blob prevents parameter downgrade attacks.
+const ad_size = 8 + 4 + 4 + 4 + 32;
+
+fn buildAd(params: Params, salt: [32]u8) [ad_size]u8 {
+    var ad: [ad_size]u8 = undefined;
+    @memcpy(ad[0..8], MAGIC);
+    std.mem.writeInt(u32, ad[8..12], params.t, .little);
+    std.mem.writeInt(u32, ad[12..16], params.m, .little);
+    std.mem.writeInt(u32, ad[16..20], @as(u32, params.p), .little);
+    @memcpy(ad[20..52], &salt);
+    return ad;
+}
 
 /// Derive a 32-byte encryption key from `password` using Argon2id.
 pub fn deriveKey(
@@ -59,17 +76,16 @@ pub fn createHeader(
 
     const key = try deriveKey(allocator, password, salt, params);
 
-    const vblob = try cipher.encrypt(allocator, key, verify_plaintext);
-    defer allocator.free(vblob);
+    const ad = buildAd(params, salt);
+    var vblob: [verify_blob_len]u8 = undefined;
+    var nonce: [AEAD.nonce_length]u8 = undefined;
+    std.crypto.random.bytes(&nonce);
+    @memcpy(vblob[0..AEAD.nonce_length], &nonce);
+    var tag: [AEAD.tag_length]u8 = undefined;
+    AEAD.encrypt(vblob[cipher.overhead..], &tag, verify_plaintext, &ad, nonce, key);
+    @memcpy(vblob[AEAD.nonce_length..cipher.overhead], &tag);
 
-    var header = Header{
-        .params = params,
-        .salt = salt,
-        .verify_blob = undefined,
-    };
-    @memcpy(&header.verify_blob, vblob);
-
-    return .{ .header = header, .key = key };
+    return .{ .header = .{ .params = params, .salt = salt, .verify_blob = vblob }, .key = key };
 }
 
 /// Attempt to verify `password` against a stored `header`.
@@ -81,13 +97,17 @@ pub fn verifyPassword(
 ) !?[cipher.key_length]u8 {
     const key = try deriveKey(allocator, password, header.salt, header.params);
 
-    const pt = cipher.decrypt(allocator, key, &header.verify_blob) catch |err| {
+    const ad = buildAd(header.params, header.salt);
+    const vblob = &header.verify_blob;
+    var nonce: [AEAD.nonce_length]u8 = undefined;
+    @memcpy(&nonce, vblob[0..AEAD.nonce_length]);
+    var tag: [AEAD.tag_length]u8 = undefined;
+    @memcpy(&tag, vblob[AEAD.nonce_length..cipher.overhead]);
+    var pt: [verify_plaintext.len]u8 = undefined;
+    AEAD.decrypt(&pt, vblob[cipher.overhead..], tag, &ad, nonce, key) catch |err| {
         if (err == error.AuthenticationFailed) return null;
         return err;
     };
-    defer allocator.free(pt);
-
-    if (!std.mem.eql(u8, pt, verify_plaintext)) return null;
     return key;
 }
 
@@ -180,6 +200,15 @@ test "verifyPassword returns null for wrong password" {
     const allocator = std.testing.allocator;
     const result = try createHeader(allocator, "correct", test_params);
     const key = try verifyPassword(allocator, "incorrect", result.header);
+    try std.testing.expect(key == null);
+}
+
+test "tampered params fail verification" {
+    const allocator = std.testing.allocator;
+    const result = try createHeader(allocator, "password", test_params);
+    var header = result.header;
+    header.params.t += 1; // simulate downgrade/tampering
+    const key = try verifyPassword(allocator, "password", header);
     try std.testing.expect(key == null);
 }
 
