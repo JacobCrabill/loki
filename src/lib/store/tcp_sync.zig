@@ -380,3 +380,272 @@ pub fn syncSession(
 
     return result;
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+/// Create a new database directory `name` under `base_dir` by copying the
+/// header from `src_db` so both databases share the same derived key.
+fn testOpenPairedDb(
+    allocator: std.mem.Allocator,
+    base_dir: std.fs.Dir,
+    src_db: *const Database,
+    name: []const u8,
+    password: []const u8,
+) !Database {
+    try base_dir.makeDir(name);
+    {
+        var new_dir = try base_dir.openDir(name, .{});
+        defer new_dir.close();
+        try new_dir.makeDir("objects");
+        const hdr = try src_db.dir.readFileAlloc(allocator, "header", 512);
+        defer allocator.free(hdr);
+        const f = try new_dir.createFile("header", .{});
+        defer f.close();
+        try f.writeAll(hdr);
+    }
+    return Database.open(allocator, base_dir, name, password);
+}
+
+const TestServerCtx = struct {
+    allocator: std.mem.Allocator,
+    db: *Database,
+    server: *std.net.Server,
+    result: SyncResult = .{},
+    err: ?anyerror = null,
+};
+
+fn testServerFn(ctx: *TestServerCtx) void {
+    const conn = ctx.server.accept() catch |e| {
+        ctx.err = e;
+        return;
+    };
+    defer conn.stream.close();
+    var r = conn.stream.reader(&.{});
+    var w = conn.stream.writer(&.{});
+    var conflicts: std.ArrayList(ConflictEntry) = .{};
+    defer conflicts.deinit(ctx.allocator);
+    ctx.result = syncSession(
+        ctx.allocator, ctx.db, r.interface(), &w.interface, .server, &conflicts,
+    ) catch |e| blk: {
+        ctx.err = e;
+        break :blk .{};
+    };
+}
+
+test "TCP sync: disjoint entries exchanged between client and server" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var client_db = try Database.create(allocator, tmp.dir, "client", "pw");
+    defer client_db.deinit();
+    var server_db = try testOpenPairedDb(allocator, tmp.dir, &client_db, "server", "pw");
+    defer server_db.deinit();
+
+    _ = try client_db.createEntry(.{
+        .parent_hash = null, .path = "", .title = "Client Entry",
+        .description = "", .url = "", .username = "c", .password = "cp", .notes = "",
+    });
+    _ = try server_db.createEntry(.{
+        .parent_hash = null, .path = "", .title = "Server Entry",
+        .description = "", .url = "", .username = "s", .password = "sp", .notes = "",
+    });
+
+    const addr = try std.net.Address.parseIp("127.0.0.1", 0);
+    var listener = try addr.listen(.{});
+    defer listener.deinit();
+
+    var srv_ctx = TestServerCtx{ .allocator = allocator, .db = &server_db, .server = &listener };
+    const thread = try std.Thread.spawn(.{}, testServerFn, .{&srv_ctx});
+
+    const stream = try std.net.tcpConnectToAddress(listener.listen_address);
+    defer stream.close();
+    var cr = stream.reader(&.{});
+    var cw = stream.writer(&.{});
+    var client_conflicts: std.ArrayList(ConflictEntry) = .{};
+    defer client_conflicts.deinit(allocator);
+    const client_result = syncSession(
+        allocator, &client_db, cr.interface(), &cw.interface, .client, &client_conflicts,
+    );
+    thread.join();
+    if (srv_ctx.err) |e| return e;
+    const result = try client_result;
+
+    try std.testing.expectEqual(@as(usize, 1), result.objects_pushed);
+    try std.testing.expectEqual(@as(usize, 1), result.objects_pulled);
+    try std.testing.expectEqual(@as(usize, 1), result.new_to_local);
+    try std.testing.expectEqual(@as(usize, 1), result.new_to_remote);
+    try std.testing.expectEqual(@as(usize, 0), result.conflicts);
+    try std.testing.expectEqual(@as(usize, 2), client_db.listEntries().len);
+    try std.testing.expectEqual(@as(usize, 2), server_db.listEntries().len);
+}
+
+test "TCP sync: client ahead fast-forwards server" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var client_db = try Database.create(allocator, tmp.dir, "client", "pw");
+    defer client_db.deinit();
+    var server_db = try testOpenPairedDb(allocator, tmp.dir, &client_db, "server", "pw");
+    defer server_db.deinit();
+
+    const eid = try client_db.createEntry(.{
+        .parent_hash = null, .path = "", .title = "Entry",
+        .description = "", .url = "", .username = "u", .password = "v1", .notes = "",
+    });
+    const v1_hash = client_db.listEntries()[0].head_hash;
+
+    // Initial sync: server gets the genesis.
+    {
+        const addr = try std.net.Address.parseIp("127.0.0.1", 0);
+        var listener = try addr.listen(.{});
+        defer listener.deinit();
+        var ctx = TestServerCtx{ .allocator = allocator, .db = &server_db, .server = &listener };
+        const t = try std.Thread.spawn(.{}, testServerFn, .{&ctx});
+        const s = try std.net.tcpConnectToAddress(listener.listen_address);
+        defer s.close();
+        var r = s.reader(&.{});
+        var w = s.writer(&.{});
+        var c: std.ArrayList(ConflictEntry) = .{};
+        defer c.deinit(allocator);
+        const res = syncSession(allocator, &client_db, r.interface(), &w.interface, .client, &c);
+        t.join();
+        if (ctx.err) |e| return e;
+        _ = try res;
+    }
+
+    // Advance client to v2.
+    _ = try client_db.updateEntry(eid, .{
+        .parent_hash = v1_hash, .path = "", .title = "Entry",
+        .description = "", .url = "", .username = "u", .password = "v2", .notes = "",
+    });
+
+    // Second sync: server should fast-forward to v2.
+    const addr2 = try std.net.Address.parseIp("127.0.0.1", 0);
+    var listener2 = try addr2.listen(.{});
+    defer listener2.deinit();
+    var srv_ctx = TestServerCtx{ .allocator = allocator, .db = &server_db, .server = &listener2 };
+    const thread2 = try std.Thread.spawn(.{}, testServerFn, .{&srv_ctx});
+    const stream2 = try std.net.tcpConnectToAddress(listener2.listen_address);
+    defer stream2.close();
+    var r2 = stream2.reader(&.{});
+    var w2 = stream2.writer(&.{});
+    var conflicts2: std.ArrayList(ConflictEntry) = .{};
+    defer conflicts2.deinit(allocator);
+    const client_result2 = syncSession(
+        allocator, &client_db, r2.interface(), &w2.interface, .client, &conflicts2,
+    );
+    thread2.join();
+    if (srv_ctx.err) |e| return e;
+    const result2 = try client_result2;
+
+    try std.testing.expectEqual(@as(usize, 1), result2.objects_pushed);
+    try std.testing.expectEqual(@as(usize, 0), result2.objects_pulled);
+    try std.testing.expectEqual(@as(usize, 1), result2.remote_advanced);
+    try std.testing.expectEqual(@as(usize, 0), result2.conflicts);
+
+    const server_entry = try server_db.getEntry(eid);
+    defer server_entry.deinit(allocator);
+    try std.testing.expectEqualStrings("v2", server_entry.password);
+}
+
+test "TCP sync: diverged entries produce conflict" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var client_db = try Database.create(allocator, tmp.dir, "client", "pw");
+    defer client_db.deinit();
+    var server_db = try testOpenPairedDb(allocator, tmp.dir, &client_db, "server", "pw");
+    defer server_db.deinit();
+
+    const eid = try client_db.createEntry(.{
+        .parent_hash = null, .path = "", .title = "Entry",
+        .description = "", .url = "", .username = "u", .password = "v0", .notes = "",
+    });
+    const v0_hash = client_db.listEntries()[0].head_hash;
+
+    // Initial sync: server gets genesis.
+    {
+        const addr = try std.net.Address.parseIp("127.0.0.1", 0);
+        var listener = try addr.listen(.{});
+        defer listener.deinit();
+        var ctx = TestServerCtx{ .allocator = allocator, .db = &server_db, .server = &listener };
+        const t = try std.Thread.spawn(.{}, testServerFn, .{&ctx});
+        const s = try std.net.tcpConnectToAddress(listener.listen_address);
+        defer s.close();
+        var r = s.reader(&.{});
+        var w = s.writer(&.{});
+        var c: std.ArrayList(ConflictEntry) = .{};
+        defer c.deinit(allocator);
+        const res = syncSession(allocator, &client_db, r.interface(), &w.interface, .client, &c);
+        t.join();
+        if (ctx.err) |e| return e;
+        _ = try res;
+    }
+
+    // Both sides independently update the same entry from the same parent.
+    _ = try client_db.updateEntry(eid, .{
+        .parent_hash = v0_hash, .path = "", .title = "Entry",
+        .description = "", .url = "", .username = "u", .password = "client-edit", .notes = "",
+    });
+    _ = try server_db.updateEntry(eid, .{
+        .parent_hash = v0_hash, .path = "", .title = "Entry",
+        .description = "", .url = "", .username = "u", .password = "server-edit", .notes = "",
+    });
+
+    // Second sync: divergence → conflict.
+    const addr2 = try std.net.Address.parseIp("127.0.0.1", 0);
+    var listener2 = try addr2.listen(.{});
+    defer listener2.deinit();
+    var srv_ctx = TestServerCtx{ .allocator = allocator, .db = &server_db, .server = &listener2 };
+    const thread2 = try std.Thread.spawn(.{}, testServerFn, .{&srv_ctx});
+    const stream2 = try std.net.tcpConnectToAddress(listener2.listen_address);
+    defer stream2.close();
+    var r2 = stream2.reader(&.{});
+    var w2 = stream2.writer(&.{});
+    var conflicts2: std.ArrayList(ConflictEntry) = .{};
+    defer conflicts2.deinit(allocator);
+    const client_result2 = syncSession(
+        allocator, &client_db, r2.interface(), &w2.interface, .client, &conflicts2,
+    );
+    thread2.join();
+    if (srv_ctx.err) |e| return e;
+    const result2 = try client_result2;
+
+    try std.testing.expectEqual(@as(usize, 1), result2.objects_pushed);
+    try std.testing.expectEqual(@as(usize, 1), result2.objects_pulled);
+    try std.testing.expectEqual(@as(usize, 1), result2.conflicts);
+    try std.testing.expectEqual(@as(usize, 1), conflicts2.items.len);
+    try std.testing.expectEqual(eid, conflicts2.items[0].entry_id);
+
+    // Client local HEAD is retained.
+    const local_entry = try client_db.getEntry(eid);
+    defer local_entry.deinit(allocator);
+    try std.testing.expectEqualStrings("client-edit", local_entry.password);
+}
+
+test "TCP sync: unencrypted database returns error before any IO" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var db = try Database.create(allocator, tmp.dir, "plain", null);
+    defer db.deinit();
+
+    // The error fires before any IO, so a fixed empty reader and no-op
+    // allocating writer are sufficient stubs.
+    var stub_r = std.Io.Reader.fixed(&[_]u8{});
+    var stub_w: std.Io.Writer.Allocating = .init(allocator);
+    defer stub_w.deinit();
+    var conflicts: std.ArrayList(ConflictEntry) = .{};
+    defer conflicts.deinit(allocator);
+
+    try std.testing.expectError(
+        error.UnencryptedDatabase,
+        syncSession(allocator, &db, &stub_r, &stub_w.writer, .client, &conflicts),
+    );
+}
