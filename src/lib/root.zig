@@ -14,6 +14,7 @@ pub const store = struct {
     pub const index = @import("store/index.zig");
     pub const database = @import("store/database.zig");
     pub const sync = @import("store/sync.zig");
+    pub const tcp_sync = @import("store/tcp_sync.zig");
 };
 
 pub const Entry = model.entry.Entry;
