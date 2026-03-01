@@ -29,7 +29,7 @@ pub const Entry = struct {
     /// Flags byte layout (bit 0 = has parent_hash, bit 1 = has merge_parent_hash).
     /// Old objects used raw 0/1 for this byte; bit 1 was always 0, so they
     /// deserialize correctly with merge_parent_hash = null.
-    pub fn serialize(self: Entry, writer: anytype) !void {
+    pub fn serialize(self: Entry, writer: *std.Io.Writer) !void {
         const flags: u8 = (if (self.parent_hash != null) @as(u8, 1) else 0) |
             (if (self.merge_parent_hash != null) @as(u8, 2) else 0);
         try writer.writeByte(flags);
@@ -46,16 +46,16 @@ pub const Entry = struct {
 
     /// Deserialize an entry from the given reader.
     /// All string fields are allocated with `allocator`; free with `deinit`.
-    pub fn deserialize(allocator: std.mem.Allocator, reader: anytype) !Entry {
-        const flags = try reader.readByte();
+    pub fn deserialize(allocator: std.mem.Allocator, reader: *std.Io.Reader) !Entry {
+        const flags = try reader.takeByte();
         const parent_hash: ?[SHA1_SIZE]u8 = if (flags & 1 != 0) blk: {
             var h: [SHA1_SIZE]u8 = undefined;
-            try reader.readNoEof(&h);
+            try reader.readSliceAll(&h);
             break :blk h;
         } else null;
         const merge_parent_hash: ?[SHA1_SIZE]u8 = if (flags & 2 != 0) blk: {
             var h: [SHA1_SIZE]u8 = undefined;
-            try reader.readNoEof(&h);
+            try reader.readSliceAll(&h);
             break :blk h;
         } else null;
 
@@ -104,11 +104,11 @@ fn writeString(writer: anytype, s: []const u8) !void {
     try writer.writeAll(s);
 }
 
-fn readString(allocator: std.mem.Allocator, reader: anytype) ![]u8 {
-    const len = try reader.readInt(u32, .little);
+fn readString(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
+    const len = try reader.takeInt(u32, .little);
     const buf = try allocator.alloc(u8, len);
     errdefer allocator.free(buf);
-    try reader.readNoEof(buf);
+    try reader.readSliceAll(buf);
     return buf;
 }
 
@@ -131,12 +131,12 @@ test "roundtrip with merge_parent_hash" {
         .notes = "",
     };
 
-    var buf: std.ArrayList(u8) = .{};
-    defer buf.deinit(allocator);
-    try original.serialize(buf.writer(allocator));
+    var buf: std.Io.Writer.Allocating = .init(allocator);
+    defer buf.deinit();
+    try original.serialize(&buf.writer);
 
-    var stream = std.io.fixedBufferStream(buf.items);
-    const loaded = try Entry.deserialize(allocator, stream.reader());
+    var stream = std.Io.Reader.fixed(buf.written());
+    const loaded = try Entry.deserialize(allocator, &stream);
     defer loaded.deinit(allocator);
 
     try std.testing.expectEqual(parent, loaded.parent_hash.?);
@@ -157,12 +157,12 @@ test "roundtrip without parent hash" {
         .notes = "2FA enabled",
     };
 
-    var buf: std.ArrayList(u8) = .{};
-    defer buf.deinit(allocator);
-    try original.serialize(buf.writer(allocator));
+    var buf: std.Io.Writer.Allocating = .init(allocator);
+    defer buf.deinit();
+    try original.serialize(&buf.writer);
 
-    var stream = std.io.fixedBufferStream(buf.items);
-    const loaded = try Entry.deserialize(allocator, stream.reader());
+    var stream = std.Io.Reader.fixed(buf.written());
+    const loaded = try Entry.deserialize(allocator, &stream);
     defer loaded.deinit(allocator);
 
     try std.testing.expect(loaded.parent_hash == null);
@@ -191,12 +191,12 @@ test "roundtrip with parent hash" {
         .notes = "",
     };
 
-    var buf: std.ArrayList(u8) = .{};
-    defer buf.deinit(allocator);
-    try original.serialize(buf.writer(allocator));
+    var buf: std.Io.Writer.Allocating = .init(allocator);
+    defer buf.deinit();
+    try original.serialize(&buf.writer);
 
-    var stream = std.io.fixedBufferStream(buf.items);
-    const loaded = try Entry.deserialize(allocator, stream.reader());
+    var stream = std.Io.Reader.fixed(buf.written());
+    const loaded = try Entry.deserialize(allocator, &stream);
     defer loaded.deinit(allocator);
 
     try std.testing.expectEqual(parent, loaded.parent_hash.?);
@@ -218,12 +218,12 @@ test "empty string fields" {
         .notes = "",
     };
 
-    var buf: std.ArrayList(u8) = .{};
-    defer buf.deinit(allocator);
-    try original.serialize(buf.writer(allocator));
+    var buf: std.Io.Writer.Allocating = .init(allocator);
+    defer buf.deinit();
+    try original.serialize(&buf.writer);
 
-    var stream = std.io.fixedBufferStream(buf.items);
-    const loaded = try Entry.deserialize(allocator, stream.reader());
+    var stream = std.Io.Reader.fixed(buf.written());
+    const loaded = try Entry.deserialize(allocator, &stream);
     defer loaded.deinit(allocator);
 
     try std.testing.expectEqualStrings("", loaded.path);
@@ -244,12 +244,12 @@ test "nested path roundtrip" {
         .notes = "",
     };
 
-    var buf: std.ArrayList(u8) = .{};
-    defer buf.deinit(allocator);
-    try original.serialize(buf.writer(allocator));
+    var buf: std.Io.Writer.Allocating = .init(allocator);
+    defer buf.deinit();
+    try original.serialize(&buf.writer);
 
-    var stream = std.io.fixedBufferStream(buf.items);
-    const loaded = try Entry.deserialize(allocator, stream.reader());
+    var stream = std.Io.Reader.fixed(buf.written());
+    const loaded = try Entry.deserialize(allocator, &stream);
     defer loaded.deinit(allocator);
 
     try std.testing.expectEqualStrings("Work/Acme-Inc/Engineering", loaded.path);

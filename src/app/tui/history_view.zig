@@ -205,9 +205,9 @@ pub const HistoryView = struct {
             self.scroll = self.cursor - visible + 1;
         }
 
-        var buf: std.ArrayList(u8) = .{};
-        defer buf.deinit(allocator);
-        const w = buf.writer(allocator);
+        var buf: std.Io.Writer.Allocating = .init(allocator);
+        defer buf.deinit();
+        const w = &buf.writer;
 
         if (self.items.items.len == 0) {
             try w.writeAll("No history.");
@@ -239,7 +239,7 @@ pub const HistoryView = struct {
         title_s = title_s.bold(true);
         title_s = title_s.inline_style(true);
         const title_line = try title_s.render(allocator, "History");
-        const content = try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ title_line, buf.items });
+        const content = try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ title_line, buf.written() });
 
         var box_s = zz.Style{};
         if (focused) {

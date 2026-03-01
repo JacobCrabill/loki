@@ -176,9 +176,9 @@ fn viewUnlock(
     term_width: u16,
     term_height: u16,
 ) ![]const u8 {
-    var buf: std.ArrayList(u8) = .{};
-    defer buf.deinit(allocator);
-    const w = buf.writer(allocator);
+    var buf: std.Io.Writer.Allocating = .init(allocator);
+    defer buf.deinit();
+    const w = &buf.writer;
 
     var title_s = zz.Style{};
     title_s = title_s.bold(true);
@@ -198,7 +198,7 @@ fn viewUnlock(
     var box_s = zz.Style{};
     box_s = box_s.borderAll(zz.Border.rounded);
     box_s = box_s.paddingAll(1);
-    const box = try box_s.render(allocator, buf.items);
+    const box = try box_s.render(allocator, buf.written());
 
     return zz.place.place(allocator, term_width, term_height, .center, .middle, box);
 }
@@ -209,9 +209,9 @@ fn viewCreate(
     term_width: u16,
     term_height: u16,
 ) ![]const u8 {
-    var buf: std.ArrayList(u8) = .{};
-    defer buf.deinit(allocator);
-    const w = buf.writer(allocator);
+    var buf: std.Io.Writer.Allocating = .init(allocator);
+    defer buf.deinit();
+    const w = &buf.writer;
 
     var title_s = zz.Style{};
     title_s = title_s.bold(true);
@@ -288,7 +288,7 @@ fn viewCreate(
     var box_s = zz.Style{};
     box_s = box_s.borderAll(zz.Border.rounded);
     box_s = box_s.paddingAll(1);
-    const box = try box_s.render(allocator, buf.items);
+    const box = try box_s.render(allocator, buf.written());
 
     return zz.place.place(allocator, term_width, term_height, .center, .middle, box);
 }
@@ -705,7 +705,7 @@ pub const Model = struct {
                             m.active_pane = .conflict;
                             return .none;
                         }
-                        const sig = m.viewer.handleKey(k, &m.db);
+                        const sig = m.viewer.handleKey(k);
                         switch (sig) {
                             .none => {},
                             .save => saveEntry(m, pa),

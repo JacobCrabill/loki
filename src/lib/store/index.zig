@@ -48,32 +48,31 @@ pub const Index = struct {
         var idx = Index.init(allocator);
         errdefer idx.deinit();
 
-        var stream = std.io.fixedBufferStream(bytes);
-        const r = stream.reader();
+        var r = std.Io.Reader.fixed(bytes);
 
         var magic: [8]u8 = undefined;
-        try r.readNoEof(&magic);
+        try r.readSliceAll(&magic);
         if (!std.mem.eql(u8, &magic, MAGIC)) return error.InvalidIndexFormat;
 
-        const count = try r.readInt(u32, .little);
+        const count = try r.takeInt(u32, .little);
         try idx.entries.ensureTotalCapacity(allocator, count);
 
         for (0..count) |_| {
             var entry_id: [20]u8 = undefined;
-            try r.readNoEof(&entry_id);
+            try r.readSliceAll(&entry_id);
 
             var head_hash: [20]u8 = undefined;
-            try r.readNoEof(&head_hash);
+            try r.readSliceAll(&head_hash);
 
-            const title_len = try r.readInt(u16, .little);
+            const title_len = try r.takeInt(u16, .little);
             const title = try allocator.alloc(u8, title_len);
             errdefer allocator.free(title);
-            try r.readNoEof(title);
+            try r.readSliceAll(title);
 
-            const path_len = try r.readInt(u16, .little);
+            const path_len = try r.takeInt(u16, .little);
             const path = try allocator.alloc(u8, path_len);
             errdefer allocator.free(path);
-            try r.readNoEof(path);
+            try r.readSliceAll(path);
 
             idx.entries.appendAssumeCapacity(.{
                 .entry_id = entry_id,
@@ -88,7 +87,7 @@ pub const Index = struct {
 
     /// Serialize the index to `writer` in LOKIIDX binary format.
     /// Used by the database layer so it can encrypt after serializing.
-    pub fn writeTo(self: *const Index, writer: anytype) !void {
+    pub fn writeTo(self: *const Index, writer: *std.Io.Writer) !void {
         try writer.writeAll(MAGIC);
         try writer.writeInt(u32, @intCast(self.entries.items.len), .little);
         for (self.entries.items) |e| {
@@ -115,12 +114,12 @@ pub const Index = struct {
 
     /// Write the index to `dir/index` in plaintext (unencrypted databases).
     pub fn write(self: *const Index, dir: std.fs.Dir) !void {
-        var buf: std.ArrayList(u8) = .{};
-        defer buf.deinit(self.allocator);
-        try self.writeTo(buf.writer(self.allocator));
+        var buf: std.Io.Writer.Allocating = .init(self.allocator);
+        defer buf.deinit();
+        try self.writeTo(&buf.writer);
         const file = try dir.createFile("index", .{});
         defer file.close();
-        try file.writeAll(buf.items);
+        try file.writeAll(buf.written());
     }
 
     /// Look up an entry by ID. Returns a mutable pointer into the entries slice.

@@ -96,19 +96,19 @@ pub const Database = struct {
 
     /// Flush the index to disk, encrypting it if the database has a key.
     pub fn save(self: *Database) !void {
-        var buf: std.ArrayList(u8) = .{};
-        defer buf.deinit(self.allocator);
-        try self.index.writeTo(buf.writer(self.allocator));
+        var buf: std.Io.Writer.Allocating = .init(self.allocator);
+        defer buf.deinit();
+        try self.index.writeTo(&buf.writer);
 
         const file = try self.dir.createFile("index", .{});
         defer file.close();
 
         if (self.key) |k| {
-            const blob = try cipher.encrypt(self.allocator, k, buf.items);
+            const blob = try cipher.encrypt(self.allocator, k, buf.written());
             defer self.allocator.free(blob);
             try file.writeAll(blob);
         } else {
-            try file.writeAll(buf.items);
+            try file.writeAll(buf.written());
         }
     }
 
@@ -133,8 +133,8 @@ pub const Database = struct {
     pub fn getVersion(self: *Database, h: [20]u8) !Entry {
         const plaintext = try self.readObject(h);
         defer self.allocator.free(plaintext);
-        var stream = std.io.fixedBufferStream(plaintext);
-        return entry_mod.Entry.deserialize(self.allocator, stream.reader());
+        var reader = std.Io.Reader.fixed(plaintext);
+        return entry_mod.Entry.deserialize(self.allocator, &reader);
     }
 
     // -------------------------------------------------------------------------
@@ -145,10 +145,10 @@ pub const Database = struct {
     /// Returns the entry_id (= hash of the genesis object).
     pub fn createEntry(self: *Database, entry: Entry) ![20]u8 {
         if (entry.parent_hash != null) return error.ExpectedGenesisEntry;
-        var buf: std.ArrayList(u8) = .{};
-        defer buf.deinit(self.allocator);
-        try entry.serialize(buf.writer(self.allocator));
-        const h = try self.writeObject(buf.items);
+        var buf: std.Io.Writer.Allocating = .init(self.allocator);
+        defer buf.deinit();
+        try entry.serialize(&buf.writer);
+        const h = try self.writeObject(buf.written());
         try self.index.addEntry(h, h, entry.title, entry.path);
         return h;
     }
@@ -161,10 +161,10 @@ pub const Database = struct {
         const parent = entry.parent_hash orelse return error.MissingParentHash;
         if (!std.mem.eql(u8, &parent, &ie.head_hash)) return error.ParentHashMismatch;
 
-        var buf: std.ArrayList(u8) = .{};
-        defer buf.deinit(self.allocator);
-        try entry.serialize(buf.writer(self.allocator));
-        const new_hash = try self.writeObject(buf.items);
+        var buf: std.Io.Writer.Allocating = .init(self.allocator);
+        defer buf.deinit();
+        try entry.serialize(&buf.writer);
+        const new_hash = try self.writeObject(buf.written());
         try self.index.updateEntry(entry_id, new_hash, entry.title, entry.path);
         return new_hash;
     }
@@ -197,18 +197,18 @@ pub const Database = struct {
     /// Hashes are not encrypted — they are non-secret identifiers.
     pub fn saveConflicts(self: *Database, conflicts: []const ConflictEntry) !void {
         // Serialise into a buffer then write atomically.
-        var buf: std.ArrayList(u8) = .{};
-        defer buf.deinit(self.allocator);
-        const w = buf.writer(self.allocator);
-        try w.writeInt(u32, @intCast(conflicts.len), .little);
+        var buf: std.Io.Writer.Allocating = .init(self.allocator);
+        defer buf.deinit();
+        var writer = &buf.writer;
+        try writer.writeInt(u32, @intCast(conflicts.len), .little);
         for (conflicts) |c| {
-            try w.writeAll(&c.entry_id);
-            try w.writeAll(&c.local_hash);
-            try w.writeAll(&c.remote_hash);
+            try writer.writeAll(&c.entry_id);
+            try writer.writeAll(&c.local_hash);
+            try writer.writeAll(&c.remote_hash);
         }
         const file = try self.dir.createFile("conflicts", .{});
         defer file.close();
-        try file.writeAll(buf.items);
+        try file.writeAll(buf.written());
     }
 
     /// Load pending conflicts from `db_dir/conflicts`.
@@ -513,9 +513,9 @@ test "encrypted: objects are not readable as plaintext" {
     // Reading the raw object bytes should NOT decode as a valid entry.
     const raw = try object.read(allocator, db.objects_dir, head);
     defer allocator.free(raw);
-    var stream = std.io.fixedBufferStream(raw);
+    var stream = std.Io.Reader.fixed(raw);
     try std.testing.expectError(
         error.EndOfStream,
-        entry_mod.Entry.deserialize(allocator, stream.reader()),
+        entry_mod.Entry.deserialize(allocator, &stream),
     );
 }

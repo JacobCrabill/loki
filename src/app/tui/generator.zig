@@ -158,10 +158,22 @@ pub const Generator = struct {
 
     fn toggleOrAdjust(self: *Generator) void {
         switch (@as(Row, @enumFromInt(self.cursor_row))) {
-            .upper => { self.use_upper = !self.use_upper; self.regenerate(); },
-            .lower => { self.use_lower = !self.use_lower; self.regenerate(); },
-            .digits => { self.use_digits = !self.use_digits; self.regenerate(); },
-            .symbols => { self.use_symbols = !self.use_symbols; self.regenerate(); },
+            .upper => {
+                self.use_upper = !self.use_upper;
+                self.regenerate();
+            },
+            .lower => {
+                self.use_lower = !self.use_lower;
+                self.regenerate();
+            },
+            .digits => {
+                self.use_digits = !self.use_digits;
+                self.regenerate();
+            },
+            .symbols => {
+                self.use_symbols = !self.use_symbols;
+                self.regenerate();
+            },
             .preview => self.regenerate(),
             else => {},
         }
@@ -173,17 +185,16 @@ pub const Generator = struct {
     }
 
     pub fn view(self: *const Generator, allocator: std.mem.Allocator) ![]const u8 {
-        var buf: std.ArrayList(u8) = .{};
-        defer buf.deinit(allocator);
-        const w = buf.writer(allocator);
+        var buf: std.Io.Writer.Allocating = .init(allocator);
+        defer buf.deinit();
+        const w = &buf.writer;
 
         var title_s = zz.Style{};
         title_s = title_s.bold(true);
         try w.writeAll(try title_s.render(allocator, "Generate Password"));
         try w.writeAll("\n\n");
 
-        try writeRow(w, allocator, self.cursor_row == @intFromEnum(Row.length),
-            try std.fmt.allocPrint(allocator, "Length: {d}  (←/→ or -/+ to adjust)", .{self.length}));
+        try writeRow(w, allocator, self.cursor_row == @intFromEnum(Row.length), try std.fmt.allocPrint(allocator, "Length: {d}  (←/→ or -/+ to adjust)", .{self.length}));
         try writeCheckRow(w, allocator, self.cursor_row == @intFromEnum(Row.upper), self.use_upper, "Uppercase (A-Z)");
         try writeCheckRow(w, allocator, self.cursor_row == @intFromEnum(Row.lower), self.use_lower, "Lowercase (a-z)");
         try writeCheckRow(w, allocator, self.cursor_row == @intFromEnum(Row.digits), self.use_digits, "Digits (0-9)");
@@ -194,7 +205,10 @@ pub const Generator = struct {
         // Preview row.
         const pw_sel = self.cursor_row == @intFromEnum(Row.preview);
         var pw_label_s = zz.Style{};
-        if (pw_sel) { pw_label_s = pw_label_s.bold(true); pw_label_s = pw_label_s.fg(zz.Color.magenta()); }
+        if (pw_sel) {
+            pw_label_s = pw_label_s.bold(true);
+            pw_label_s = pw_label_s.fg(zz.Color.magenta());
+        }
         try w.writeAll(try pw_label_s.render(allocator, if (pw_sel) "> Preview:  " else "  Preview:  "));
         var pw_val_s = zz.Style{};
         pw_val_s = pw_val_s.fg(zz.Color.cyan());
@@ -205,28 +219,37 @@ pub const Generator = struct {
         try w.writeByte('\n');
         const accept_sel = self.cursor_row == @intFromEnum(Row.accept);
         var accept_s = zz.Style{};
-        if (accept_sel) { accept_s = accept_s.bold(true); accept_s = accept_s.fg(zz.Color.green()); }
+        if (accept_sel) {
+            accept_s = accept_s.bold(true);
+            accept_s = accept_s.fg(zz.Color.green());
+        }
         try w.writeAll(try accept_s.render(allocator, if (accept_sel) "> [ Use this password ]" else "  [ Use this password ]"));
         try w.writeByte('\n');
 
         var box_s = zz.Style{};
         box_s = box_s.borderAll(zz.Border.rounded);
         box_s = box_s.paddingAll(1);
-        return box_s.render(allocator, buf.items);
+        return box_s.render(allocator, buf.written());
     }
 };
 
-fn writeRow(w: anytype, allocator: std.mem.Allocator, selected: bool, text: []const u8) !void {
+fn writeRow(w: *std.Io.Writer, allocator: std.mem.Allocator, selected: bool, text: []const u8) !void {
     var s = zz.Style{};
-    if (selected) { s = s.bold(true); s = s.fg(zz.Color.magenta()); }
+    if (selected) {
+        s = s.bold(true);
+        s = s.fg(zz.Color.magenta());
+    }
     const prefix: []const u8 = if (selected) "> " else "  ";
     try w.writeAll(try s.render(allocator, try std.fmt.allocPrint(allocator, "{s}{s}", .{ prefix, text })));
     try w.writeByte('\n');
 }
 
-fn writeCheckRow(w: anytype, allocator: std.mem.Allocator, selected: bool, checked: bool, label: []const u8) !void {
+fn writeCheckRow(w: *std.Io.Writer, allocator: std.mem.Allocator, selected: bool, checked: bool, label: []const u8) !void {
     var s = zz.Style{};
-    if (selected) { s = s.bold(true); s = s.fg(zz.Color.magenta()); }
+    if (selected) {
+        s = s.bold(true);
+        s = s.fg(zz.Color.magenta());
+    }
     const prefix: []const u8 = if (selected) "> " else "  ";
     const check: []const u8 = if (checked) "[x] " else "[ ] ";
     try w.writeAll(try s.render(allocator, try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ prefix, check, label })));

@@ -234,14 +234,14 @@ fn runSsh(
     try local_db.save();
 
     // 8. Serialize merged remote index and push back.
-    var idx_buf: std.ArrayList(u8) = .{};
-    defer idx_buf.deinit(allocator);
-    try remote_idx.writeTo(idx_buf.writer(allocator));
+    var idx_buf: std.Io.Writer.Allocating = .init(allocator);
+    defer idx_buf.deinit();
+    try remote_idx.writeTo(&idx_buf.writer);
 
     const merged_bytes = if (local_db.key) |k|
-        try cipher_mod.encrypt(allocator, k, idx_buf.items)
+        try cipher_mod.encrypt(allocator, k, idx_buf.written())
     else
-        try allocator.dupe(u8, idx_buf.items);
+        try allocator.dupe(u8, idx_buf.written());
     defer allocator.free(merged_bytes);
 
     const merged_file = try std.fs.cwd().createFile(tmp_index_merged, .{});

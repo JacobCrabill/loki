@@ -29,4 +29,5 @@ comptime {
     _ = store.index;
     _ = store.database;
     _ = store.sync;
+    _ = store.tcp_sync;
 }

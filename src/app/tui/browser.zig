@@ -230,9 +230,9 @@ pub const Browser = struct {
             self.scroll = self.cursor - visible + 1;
         }
 
-        var buf: std.ArrayList(u8) = .{};
-        defer buf.deinit(allocator);
-        const w = buf.writer(allocator);
+        var buf: std.Io.Writer.Allocating = .init(allocator);
+        defer buf.deinit();
+        const w = &buf.writer;
 
         const end = @min(self.scroll + visible, self.rows.items.len);
         for (self.scroll..end) |i| {
@@ -275,7 +275,7 @@ pub const Browser = struct {
         title_s = title_s.bold(true);
         title_s = title_s.inline_style(true);
         const title_line = try title_s.render(allocator, "Entries");
-        const content = try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ title_line, buf.items });
+        const content = try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ title_line, buf.written() });
 
         var box_s = zz.Style{};
         if (focused) {

@@ -138,22 +138,21 @@ pub fn readHeader(dir: std.fs.Dir) !Header {
     const n = try file.readAll(&buf);
     if (n != header_size) return error.InvalidHeader;
 
-    var stream = std.io.fixedBufferStream(&buf);
-    const r = stream.reader();
+    var r = std.Io.Reader.fixed(&buf);
 
     var magic: [8]u8 = undefined;
-    try r.readNoEof(&magic);
+    try r.readSliceAll(&magic);
     if (!std.mem.eql(u8, &magic, MAGIC)) return error.InvalidHeader;
 
-    const t = try r.readInt(u32, .little);
-    const m = try r.readInt(u32, .little);
-    const p: u24 = @intCast(try r.readInt(u32, .little));
+    const t = try r.takeInt(u32, .little);
+    const m = try r.takeInt(u32, .little);
+    const p: u24 = @intCast(try r.takeInt(u32, .little));
 
     var salt: [32]u8 = undefined;
-    try r.readNoEof(&salt);
+    try r.readSliceAll(&salt);
 
     var verify_blob: [verify_blob_len]u8 = undefined;
-    try r.readNoEof(&verify_blob);
+    try r.readSliceAll(&verify_blob);
 
     return Header{
         .params = .{ .t = t, .m = m, .p = p },

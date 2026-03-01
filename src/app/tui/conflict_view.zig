@@ -422,9 +422,9 @@ pub const ConflictView = struct {
         const content_w: u16 = width -| 4; // 2 borders + 1 left-pad + 1 slack
         const content_h: u16 = height -| 2; // top + bottom borders
 
-        var buf: std.ArrayList(u8) = .{};
-        defer buf.deinit(allocator);
-        const w = buf.writer(allocator);
+        var buf: std.Io.Writer.Allocating = .init(allocator);
+        defer buf.deinit();
+        const w = &buf.writer;
 
         const l = self.local_entry;
         const r = self.remote_entry;
@@ -554,7 +554,7 @@ pub const ConflictView = struct {
         box_s = box_s.paddingLeft(1);
         box_s = box_s.width(content_w);
         box_s = box_s.height(content_h);
-        return box_s.render(allocator, buf.items);
+        return box_s.render(allocator, buf.written());
     }
 };
 

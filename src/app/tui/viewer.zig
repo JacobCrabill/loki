@@ -275,8 +275,7 @@ pub const Viewer = struct {
         };
     }
 
-    pub fn handleKey(self: *Viewer, key: zz.KeyEvent, _db: anytype) Signal {
-        _ = _db;
+    pub fn handleKey(self: *Viewer, key: zz.KeyEvent) Signal {
         // Generator intercepts all keys when active.
         if (self.generator.active) {
             self.generator.handleKey(key);
@@ -394,9 +393,9 @@ pub const Viewer = struct {
         const notes_w: u16 = if (pane_width > 12) pane_width - 12 else 20;
         self.notes_area.setSize(notes_w, 4);
 
-        var buf: std.ArrayList(u8) = .{};
-        defer buf.deinit(allocator);
-        const w = buf.writer(allocator);
+        var buf: std.Io.Writer.Allocating = .init(allocator);
+        defer buf.deinit();
+        const w = &buf.writer;
 
         if (self.entry != null or self.is_new) {
             const editing = self.mode == .edit;
@@ -427,7 +426,6 @@ pub const Viewer = struct {
                     try w.writeByte('\n');
                 }
             }
-
         } else {
             try w.writeAll("No entry selected.\n\nSelect an entry in the browser pane.");
         }
@@ -445,12 +443,12 @@ pub const Viewer = struct {
         box_s = box_s.paddingLeft(1);
         box_s = box_s.width(content_w);
         box_s = box_s.height(content_h);
-        return box_s.render(allocator, buf.items);
+        return box_s.render(allocator, buf.written());
     }
 
     fn renderField(
         self: *Viewer,
-        writer: anytype,
+        writer: *std.Io.Writer,
         allocator: std.mem.Allocator,
         field: Fields,
         editing: bool,

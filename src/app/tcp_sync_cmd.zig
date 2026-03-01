@@ -46,10 +46,12 @@ pub fn serve(
     const conn = try server.accept();
     defer conn.stream.close();
 
+    var r = conn.stream.reader(&.{});
+    var w = conn.stream.writer(&.{});
     var conflicts: std.ArrayList(ConflictEntry) = .{};
     defer conflicts.deinit(allocator);
 
-    const result = try tcp_sync.syncSession(allocator, &db, conn.stream, .server, &conflicts);
+    const result = try tcp_sync.syncSession(allocator, &db, r.interface(), &w.interface, .server, &conflicts);
     try printResult(allocator, result);
 }
 
@@ -88,10 +90,12 @@ pub fn connect(
     const stream = try std.net.tcpConnectToAddress(addr_list.addrs[0]);
     defer stream.close();
 
+    var r = stream.reader(&.{});
+    var w = stream.writer(&.{});
     var conflicts: std.ArrayList(ConflictEntry) = .{};
     defer conflicts.deinit(allocator);
 
-    const result = try tcp_sync.syncSession(allocator, &db, stream, .client, &conflicts);
+    const result = try tcp_sync.syncSession(allocator, &db, r.interface(), &w.interface, .client, &conflicts);
     try printResult(allocator, result);
 }
 

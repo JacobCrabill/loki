@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const cipher = @import("../crypto/cipher.zig");
 const index_mod = @import("index.zig");
 const object = @import("object.zig");
@@ -15,16 +16,6 @@ pub const Role = enum { client, server };
 /// Maximum encrypted message size (8 MiB). Protects against malformed length prefixes.
 const max_msg_len: u32 = 8 * 1024 * 1024;
 
-/// Read exactly `buf.len` bytes from a stream, retrying on short reads.
-fn readExact(conn: std.net.Stream, buf: []u8) !void {
-    var total: usize = 0;
-    while (total < buf.len) {
-        const n = try conn.read(buf[total..]);
-        if (n == 0) return error.EndOfStream;
-        total += n;
-    }
-}
-
 const MsgType = enum(u8) {
     object_list = 0x01,
     object_data = 0x02,
@@ -38,9 +29,9 @@ const MsgType = enum(u8) {
 // Session
 // ---------------------------------------------------------------------------
 
-/// An authenticated, encrypted TCP session derived from the database key.
 const Session = struct {
-    conn: std.net.Stream,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
     key: [32]u8,
     send_counter: u64,
     recv_counter: u64,
@@ -50,7 +41,10 @@ const Session = struct {
     /// Client and server use different direction bytes so their nonces never collide.
     fn makeNonce(role: Role, counter: u64) [12]u8 {
         var nonce = std.mem.zeroes([12]u8);
-        nonce[0] = switch (role) { .client => 0x00, .server => 0x01 };
+        nonce[0] = switch (role) {
+            .client => 0x00,
+            .server => 0x01,
+        };
         std.mem.writeInt(u64, nonce[4..12], counter, .little);
         return nonce;
     }
@@ -70,26 +64,28 @@ const Session = struct {
 
         var len_buf: [4]u8 = undefined;
         std.mem.writeInt(u32, &len_buf, blob_len, .little);
-        try self.conn.writeAll(&len_buf);
-        try self.conn.writeAll(blob);
+        try self.writer.writeAll(&len_buf);
+        try self.writer.writeAll(blob);
     }
 
     /// Receive and decrypt one message. Caller must free the returned slice.
     fn recv(self: *Session, allocator: std.mem.Allocator) ![]u8 {
-        const peer_role: Role = switch (self.role) { .client => .server, .server => .client };
+        const peer_role: Role = switch (self.role) {
+            .client => .server,
+            .server => .client,
+        };
         const nonce = makeNonce(peer_role, self.recv_counter);
         self.recv_counter += 1;
 
         var len_buf: [4]u8 = undefined;
-        try readExact(self.conn, &len_buf);
+        try self.reader.readSliceAll(&len_buf);
         const blob_len = std.mem.readInt(u32, &len_buf, .little);
 
         if (blob_len < 16) return error.InvalidMessage;
         if (blob_len > max_msg_len) return error.MessageTooLarge;
 
-        const blob = try allocator.alloc(u8, blob_len);
+        const blob = try self.reader.readAlloc(allocator, blob_len);
         defer allocator.free(blob);
-        try readExact(self.conn, blob);
 
         var tag: [16]u8 = undefined;
         @memcpy(&tag, blob[0..16]);
@@ -106,11 +102,12 @@ const Session = struct {
 // ---------------------------------------------------------------------------
 
 /// Exchange nonces and derive a one-time session key via HKDF-SHA256.
-/// Client sends first; server receives first. Both sides derive the same
-/// session_key = HKDF(ikm=db_key, salt=nonce_C++nonce_S, info="loki-sync-v1").
+/// Client sends first; server receives first. Both derive:
+///   session_key = HKDF(ikm=db_key, salt=nonce_C++nonce_S, info="loki-sync-v1")
 fn establishSession(
     db_key: [32]u8,
-    conn: std.net.Stream,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
     role: Role,
 ) !Session {
     var nonce_c: [32]u8 = undefined;
@@ -119,13 +116,13 @@ fn establishSession(
     switch (role) {
         .client => {
             std.crypto.random.bytes(&nonce_c);
-            try conn.writeAll(&nonce_c);
-            try readExact(conn, &nonce_s);
+            try writer.writeAll(&nonce_c);
+            try reader.readSliceAll(&nonce_s);
         },
         .server => {
-            try readExact(conn, &nonce_c);
+            try reader.readSliceAll(&nonce_c);
             std.crypto.random.bytes(&nonce_s);
-            try conn.writeAll(&nonce_s);
+            try writer.writeAll(&nonce_s);
         },
     }
 
@@ -137,8 +134,9 @@ fn establishSession(
     var session_key: [32]u8 = undefined;
     Hkdf.expand(&session_key, "loki-sync-v1", prk);
 
-    return Session{
-        .conn = conn,
+    return .{
+        .reader = reader,
+        .writer = writer,
         .key = session_key,
         .send_counter = 0,
         .recv_counter = 0,
@@ -167,11 +165,7 @@ fn listObjectHashes(allocator: std.mem.Allocator, db: *Database) ![][20]u8 {
     return list.toOwnedSlice(allocator);
 }
 
-fn sendObjectList(
-    allocator: std.mem.Allocator,
-    session: *Session,
-    hashes: [][20]u8,
-) !void {
+fn sendObjectList(allocator: std.mem.Allocator, session: *Session, hashes: [][20]u8) !void {
     const payload = try allocator.alloc(u8, 1 + 4 + hashes.len * 20);
     defer allocator.free(payload);
     payload[0] = @intFromEnum(MsgType.object_list);
@@ -239,11 +233,7 @@ fn sendMissingObjects(
 }
 
 /// Receive OBJECT_DATA messages until DONE. Write each object to the local store.
-fn recvObjects(
-    allocator: std.mem.Allocator,
-    session: *Session,
-    db: *Database,
-) !usize {
+fn recvObjects(allocator: std.mem.Allocator, session: *Session, db: *Database) !usize {
     var count: usize = 0;
     while (true) {
         const msg = try session.recv(allocator);
@@ -276,19 +266,15 @@ fn recvObjects(
 // ---------------------------------------------------------------------------
 
 /// Serialize the in-memory index, encrypt it, and send it.
-fn sendIndex(
-    allocator: std.mem.Allocator,
-    session: *Session,
-    db: *Database,
-) !void {
-    var buf: std.ArrayList(u8) = .{};
-    defer buf.deinit(allocator);
-    try db.index.writeTo(buf.writer(allocator));
+fn sendIndex(allocator: std.mem.Allocator, session: *Session, db: *Database) !void {
+    var buf: std.Io.Writer.Allocating = .init(allocator);
+    defer buf.deinit();
+    try db.index.writeTo(&buf.writer);
 
     const encrypted: []u8 = if (db.key) |k|
-        try cipher.encrypt(allocator, k, buf.items)
+        try cipher.encrypt(allocator, k, buf.written())
     else
-        try allocator.dupe(u8, buf.items);
+        try allocator.dupe(u8, buf.written());
     defer allocator.free(encrypted);
 
     const payload = try allocator.alloc(u8, 1 + encrypted.len);
@@ -299,11 +285,7 @@ fn sendIndex(
 }
 
 /// Receive an INDEX_DATA message and parse it into an Index. Caller must call deinit.
-fn recvIndex(
-    allocator: std.mem.Allocator,
-    session: *Session,
-    db: *Database,
-) !index_mod.Index {
+fn recvIndex(allocator: std.mem.Allocator, session: *Session, db: *Database) !index_mod.Index {
     const msg = try session.recv(allocator);
     defer allocator.free(msg);
     if (msg.len < 1 or @as(MsgType, @enumFromInt(msg[0])) != .index_data)
@@ -322,22 +304,26 @@ fn recvIndex(
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Sync `db` with a peer over an established TCP connection.
+/// Sync `db` with a peer over a reader/writer pair.
 ///
 /// Both sides must use the same encrypted database (same password → same key).
 /// `role` determines message ordering: the client sends first in each phase.
 ///
 /// Conflicts are appended to `conflicts_out`; the database is saved before returning.
 /// Returns `error.UnencryptedDatabase` if `db` has no encryption key.
+///
+/// For TCP: obtain `reader`/`writer` via `stream.reader(&buf).interface()` and `&stream.writer(&buf).interface`.
+/// For pipes/tests: obtain via `&file.readerStreaming(&buf).interface` and `&file.writerStreaming(&buf).interface`.
 pub fn syncSession(
     allocator: std.mem.Allocator,
     db: *Database,
-    conn: std.net.Stream,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
     role: Role,
     conflicts_out: *std.ArrayList(ConflictEntry),
 ) !SyncResult {
     const db_key = db.key orelse return error.UnencryptedDatabase;
-    var session = try establishSession(db_key, conn, role);
+    var session = try establishSession(db_key, reader, writer, role);
 
     // Phase 1: exchange object lists (client sends first)
     const local_hashes = try listObjectHashes(allocator, db);
