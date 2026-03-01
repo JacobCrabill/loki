@@ -21,19 +21,57 @@ fn detectEncrypted(db_path: []const u8) bool {
     return true;
 }
 
+/// RAII guard that disables terminal echo on init and restores it on deinit.
+/// Selects the platform-appropriate implementation at compile time.
+const EchoGuard = switch (@import("builtin").os.tag) {
+    .windows => struct {
+        const windows = std.os.windows;
+        const ENABLE_ECHO_INPUT: windows.DWORD = 0x0004;
+        extern "kernel32" fn GetConsoleMode(hConsole: windows.HANDLE, lpMode: *windows.DWORD) callconv(.winapi) windows.BOOL;
+        extern "kernel32" fn SetConsoleMode(hConsole: windows.HANDLE, dwMode: windows.DWORD) callconv(.winapi) windows.BOOL;
+
+        handle: windows.HANDLE,
+        old_mode: windows.DWORD,
+
+        fn init(file: std.fs.File) !@This() {
+            const handle = file.handle;
+            var old_mode: windows.DWORD = 0;
+            if (GetConsoleMode(handle, &old_mode) == 0) return error.GetConsoleModeError;
+            if (SetConsoleMode(handle, old_mode & ~ENABLE_ECHO_INPUT) == 0) return error.SetConsoleModeError;
+            return .{ .handle = handle, .old_mode = old_mode };
+        }
+
+        fn deinit(self: @This()) void {
+            _ = SetConsoleMode(self.handle, self.old_mode);
+        }
+    },
+    else => struct {
+        fd: std.posix.fd_t,
+        old_tio: std.posix.termios,
+
+        fn init(file: std.fs.File) !@This() {
+            const fd = file.handle;
+            const old_tio = try std.posix.tcgetattr(fd);
+            var new_tio = old_tio;
+            new_tio.lflag.ECHO = false;
+            try std.posix.tcsetattr(fd, .NOW, new_tio);
+            return .{ .fd = fd, .old_tio = old_tio };
+        }
+
+        fn deinit(self: @This()) void {
+            std.posix.tcsetattr(self.fd, .NOW, self.old_tio) catch {};
+        }
+    },
+};
+
 fn promptPassword(allocator: std.mem.Allocator) ![]u8 {
     const stderr = std.fs.File.stderr();
     try stderr.writeAll("Password: ");
 
-    // Disable terminal echo via POSIX termios.
-    const stdin_fd: std.posix.fd_t = 0; // STDIN_FILENO
-    const old_tio = try std.posix.tcgetattr(stdin_fd);
-    var new_tio = old_tio;
-    new_tio.lflag.ECHO = false;
-    try std.posix.tcsetattr(stdin_fd, .NOW, new_tio);
-    defer std.posix.tcsetattr(stdin_fd, .NOW, old_tio) catch {};
-
     const stdin = std.fs.File.stdin();
+    const guard = try EchoGuard.init(stdin);
+    defer guard.deinit();
+
     var buf: std.ArrayList(u8) = .{};
     errdefer buf.deinit(allocator);
 
