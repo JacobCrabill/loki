@@ -48,11 +48,26 @@ pub fn serve(
 
     var r = conn.stream.reader(&.{});
     var w = conn.stream.writer(&.{});
-    var conflicts: std.ArrayList(ConflictEntry) = .{};
-    defer conflicts.deinit(allocator);
+    const ri = r.interface();
+    const wi = &w.interface;
 
-    const result = try tcp_sync.syncSession(allocator, &db, r.interface(), &w.interface, .server, &conflicts);
-    try printResult(allocator, result);
+    // Read the one-byte protocol discriminator to decide which protocol to run.
+    var disc: [1]u8 = undefined;
+    try ri.readSliceAll(&disc);
+
+    switch (disc[0]) {
+        tcp_sync.protocol_sync => {
+            var conflicts: std.ArrayList(ConflictEntry) = .{};
+            defer conflicts.deinit(allocator);
+            const result = try tcp_sync.syncSession(allocator, &db, ri, wi, .server, &conflicts);
+            try printResult(allocator, result);
+        },
+        tcp_sync.protocol_fetch => {
+            try tcp_sync.fetchServe(allocator, &db, ri, wi);
+            try stderr.writeAll("Fetch served successfully.\n");
+        },
+        else => return error.UnknownProtocol,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -92,10 +107,16 @@ pub fn connect(
 
     var r = stream.reader(&.{});
     var w = stream.writer(&.{});
+    const ri = r.interface();
+    const wi = &w.interface;
+
+    // Send the protocol discriminator before anything else.
+    try wi.writeAll(&[_]u8{tcp_sync.protocol_sync});
+
     var conflicts: std.ArrayList(ConflictEntry) = .{};
     defer conflicts.deinit(allocator);
 
-    const result = try tcp_sync.syncSession(allocator, &db, r.interface(), &w.interface, .client, &conflicts);
+    const result = try tcp_sync.syncSession(allocator, &db, ri, wi, .client, &conflicts);
     try printResult(allocator, result);
 }
 
@@ -126,6 +147,61 @@ fn printResult(allocator: std.mem.Allocator, result: tcp_sync.SyncResult) !void 
     if (result.conflicts > 0) {
         try out.writeAll("Open the TUI to resolve conflicts.\n");
     }
+}
+
+// ---------------------------------------------------------------------------
+// fetch
+// ---------------------------------------------------------------------------
+
+/// Connect to a server and download its database, creating it locally at
+/// `db_path`. Prompts for the database password interactively.
+pub fn fetch(
+    allocator: std.mem.Allocator,
+    db_path: []const u8,
+    host: []const u8,
+    port: u16,
+) !void {
+    const stderr = std.fs.File.stderr();
+
+    const password = try utils.promptPassword(allocator);
+    defer allocator.free(password);
+
+    const addr_list = try std.net.getAddressList(allocator, host, port);
+    defer addr_list.deinit();
+    if (addr_list.addrs.len == 0) return error.UnknownHost;
+
+    const stream = try std.net.tcpConnectToAddress(addr_list.addrs[0]);
+    defer stream.close();
+
+    var r = stream.reader(&.{});
+    var w = stream.writer(&.{});
+    const ri = r.interface();
+    const wi = &w.interface;
+
+    // Announce the fetch protocol.
+    try wi.writeAll(&[_]u8{tcp_sync.protocol_fetch});
+
+    // TODO: default to ~/.loki
+    const dirname = std.fs.path.dirname(db_path) orelse ".";
+    const basename = std.fs.path.basename(db_path);
+    var base_dir = try std.fs.cwd().openDir(dirname, .{});
+    defer base_dir.close();
+
+    tcp_sync.fetchClient(allocator, password, base_dir, basename, ri, wi) catch |err| {
+        if (err == error.WrongPassword) {
+            try stderr.writeAll("Error: wrong password\n");
+            return;
+        }
+        if (err == error.PathAlreadyExists) {
+            try stderr.writeAll("Error: database already exists at that path\n");
+            return;
+        }
+        return err;
+    };
+
+    const msg = try std.fmt.allocPrint(allocator, "Fetch complete. Database created at '{s}'.\n", .{db_path});
+    defer allocator.free(msg);
+    try std.fs.File.stdout().writeAll(msg);
 }
 
 /// Parse "host:port" into its components. Port defaults to `default_port`.

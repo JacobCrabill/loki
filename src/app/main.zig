@@ -69,6 +69,17 @@ pub fn main() !void {
         std.process.exit(0);
     }
 
+    // loki fetch <host:port> [db_path]  →  download a database from a server
+    if (args.len >= 3 and std.mem.eql(u8, args[1], "fetch")) {
+        const db_path = if (args.len >= 4) args[3] else (default_db_path orelse {
+            std.debug.print("Error: cannot determine home directory\n", .{});
+            std.process.exit(1);
+        });
+        const hp = tcp_sync_cmd.parseHostPort(args[2]);
+        try tcp_sync_cmd.fetch(allocator, db_path, hp.host, hp.port);
+        std.process.exit(0);
+    }
+
     // loki <db_path>  →  open TUI on specified db
     if (args.len >= 2) {
         try app.run(allocator, args[1]);
@@ -91,17 +102,18 @@ fn printHelp(exe: []const u8) !void {
         \\Loki - simple TUI password manager
         \\
         \\Usage:
-        \\  {s}                             open ~/.loki in the TUI
+        \\  {s}                            open ~/.loki in the TUI
         \\  {s} <db_path>                  open <db_path> in the TUI
         \\  {s} sync <remote>              sync ~/.loki with <remote>
         \\  {s} <db_path> sync <remote>    sync <db_path> with <remote>
-        \\  {s} serve [port] [db_path]     listen for a TCP sync (default port: 7777)
+        \\  {s} serve [port] [db_path]     listen for a TCP sync or fetch (default port: 7777)
         \\  {s} connect <host[:port]> [db] sync with a TCP server
+        \\  {s} fetch <host[:port]> [db]   download a database from a TCP server
         \\
         \\<remote> (for sync) is a local path or an SSH path (user@host:/path).
         \\
     ,
-        .{ exe, exe, exe, exe, exe, exe },
+        .{ exe, exe, exe, exe, exe, exe, exe },
     );
     defer std.heap.page_allocator.free(msg);
     try stderr.writeAll(msg);

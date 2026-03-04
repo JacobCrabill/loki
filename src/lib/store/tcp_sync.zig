@@ -13,6 +13,11 @@ pub const SyncResult = sync_mod.SyncResult;
 pub const ConflictEntry = sync_mod.ConflictEntry;
 pub const Role = enum { client, server };
 
+/// One-byte protocol discriminator sent by the client at the start of a connection.
+/// TODO: enum
+pub const protocol_sync: u8 = 0x01;
+pub const protocol_fetch: u8 = 0x02;
+
 /// Maximum encrypted message size (8 MiB). Protects against malformed length prefixes.
 const max_msg_len: u32 = 8 * 1024 * 1024;
 
@@ -103,12 +108,15 @@ const Session = struct {
 
 /// Exchange nonces and derive a one-time session key via HKDF-SHA256.
 /// Client sends first; server receives first. Both derive:
-///   session_key = HKDF(ikm=db_key, salt=nonce_C++nonce_S, info="loki-sync-v1")
+///   session_key = HKDF(ikm=db_key, salt=nonce_C++nonce_S, info=info)
+/// `info` must match on both sides and should differ per protocol to prevent
+/// cross-protocol key reuse (e.g. "loki-sync-v1" vs "loki-fetch-v1").
 fn establishSession(
     db_key: [32]u8,
     reader: *std.Io.Reader,
     writer: *std.Io.Writer,
     role: Role,
+    info: []const u8,
 ) !Session {
     var nonce_c: [32]u8 = undefined;
     var nonce_s: [32]u8 = undefined;
@@ -132,7 +140,7 @@ fn establishSession(
 
     const prk = Hkdf.extract(&salt, &db_key);
     var session_key: [32]u8 = undefined;
-    Hkdf.expand(&session_key, "loki-sync-v1", prk);
+    Hkdf.expand(&session_key, info, prk);
 
     return .{
         .reader = reader,
@@ -323,7 +331,7 @@ pub fn syncSession(
     conflicts_out: *std.ArrayList(ConflictEntry),
 ) !SyncResult {
     const db_key = db.key orelse return error.UnencryptedDatabase;
-    var session = try establishSession(db_key, reader, writer, role);
+    var session = try establishSession(db_key, reader, writer, role, "loki-sync-v1");
 
     // Phase 1: exchange object lists (client sends first)
     const local_hashes = try listObjectHashes(allocator, db);
@@ -382,6 +390,99 @@ pub fn syncSession(
 }
 
 // ---------------------------------------------------------------------------
+// Fetch protocol
+// ---------------------------------------------------------------------------
+
+/// Server side of the fetch protocol: send the database header (unencrypted),
+/// establish an encrypted session, then push all objects and the index.
+///
+/// The client must send `protocol_fetch` before calling this; the `serve`
+/// command reads the discriminator and dispatches here.
+pub fn fetchServe(
+    allocator: std.mem.Allocator,
+    db: *Database,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+) !void {
+    const db_key = db.key orelse return error.UnencryptedDatabase;
+
+    // Send the raw header bytes with a 4-byte little-endian length prefix.
+    // The header is not secret (it contains KDF params + salt + verify blob).
+    const raw_header = try db.dir.readFileAlloc(allocator, "header", 256);
+    defer allocator.free(raw_header);
+    var len_buf: [4]u8 = undefined;
+    std.mem.writeInt(u32, &len_buf, @intCast(raw_header.len), .little);
+    try writer.writeAll(&len_buf);
+    try writer.writeAll(raw_header);
+
+    // Establish an encrypted session (server waits for client nonce first).
+    var session = try establishSession(db_key, reader, writer, .server, "loki-fetch-v1");
+
+    // Push every object in the store to the client.
+    const all_hashes = try listObjectHashes(allocator, db);
+    defer allocator.free(all_hashes);
+    var no_remote: [0][20]u8 = .{};
+    _ = try sendMissingObjects(allocator, &session, db, &no_remote, all_hashes);
+
+    // Push the index.
+    try sendIndex(allocator, &session, db);
+}
+
+/// Client side of the fetch protocol: download a database from a server into
+/// a new local directory at `base_dir/name`.
+///
+/// Call this after sending `protocol_fetch` to the server.
+/// Returns `error.WrongPassword` if the password does not match the server's
+/// header, and cleans up any partially-created files before returning.
+/// Returns `error.PathAlreadyExists` if `base_dir/name` already exists.
+pub fn fetchClient(
+    allocator: std.mem.Allocator,
+    password: []const u8,
+    base_dir: std.fs.Dir,
+    name: []const u8,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+) !void {
+    // Receive the header (unencrypted, length-prefixed).
+    var len_buf: [4]u8 = undefined;
+    try reader.readSliceAll(&len_buf);
+    const header_len = std.mem.readInt(u32, &len_buf, .little);
+    if (header_len > 256) return error.InvalidMessage;
+    const raw_header = try allocator.alloc(u8, header_len);
+    defer allocator.free(raw_header);
+    try reader.readSliceAll(raw_header);
+
+    // Create the database directory structure and write the header file.
+    // The errdefer ensures a clean filesystem state on any subsequent failure.
+    try base_dir.makeDir(name);
+    errdefer base_dir.deleteTree(name) catch {};
+    {
+        var new_dir = try base_dir.openDir(name, .{});
+        defer new_dir.close();
+        try new_dir.makeDir("objects");
+        const f = try new_dir.createFile("header", .{});
+        defer f.close();
+        try f.writeAll(raw_header);
+    }
+
+    // Open the database, which runs the KDF to verify the password.
+    var db = try Database.open(allocator, base_dir, name, password);
+    defer db.deinit();
+
+    // Establish an encrypted session (client sends its nonce first).
+    var session = try establishSession(db.key.?, reader, writer, .client, "loki-fetch-v1");
+
+    // Receive all objects and write them to the local object store.
+    _ = try recvObjects(allocator, &session, &db);
+
+    // Receive the index, replace the empty local index, and save to disk.
+    const fetched_idx = try recvIndex(allocator, &session, &db);
+    db.index.deinit();
+    db.index = fetched_idx;
+    try db.save();
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -427,7 +528,12 @@ fn testServerFn(ctx: *TestServerCtx) void {
     var conflicts: std.ArrayList(ConflictEntry) = .{};
     defer conflicts.deinit(ctx.allocator);
     ctx.result = syncSession(
-        ctx.allocator, ctx.db, r.interface(), &w.interface, .server, &conflicts,
+        ctx.allocator,
+        ctx.db,
+        r.interface(),
+        &w.interface,
+        .server,
+        &conflicts,
     ) catch |e| blk: {
         ctx.err = e;
         break :blk .{};
@@ -445,12 +551,24 @@ test "TCP sync: disjoint entries exchanged between client and server" {
     defer server_db.deinit();
 
     _ = try client_db.createEntry(.{
-        .parent_hash = null, .path = "", .title = "Client Entry",
-        .description = "", .url = "", .username = "c", .password = "cp", .notes = "",
+        .parent_hash = null,
+        .path = "",
+        .title = "Client Entry",
+        .description = "",
+        .url = "",
+        .username = "c",
+        .password = "cp",
+        .notes = "",
     });
     _ = try server_db.createEntry(.{
-        .parent_hash = null, .path = "", .title = "Server Entry",
-        .description = "", .url = "", .username = "s", .password = "sp", .notes = "",
+        .parent_hash = null,
+        .path = "",
+        .title = "Server Entry",
+        .description = "",
+        .url = "",
+        .username = "s",
+        .password = "sp",
+        .notes = "",
     });
 
     const addr = try std.net.Address.parseIp("127.0.0.1", 0);
@@ -467,7 +585,12 @@ test "TCP sync: disjoint entries exchanged between client and server" {
     var client_conflicts: std.ArrayList(ConflictEntry) = .{};
     defer client_conflicts.deinit(allocator);
     const client_result = syncSession(
-        allocator, &client_db, cr.interface(), &cw.interface, .client, &client_conflicts,
+        allocator,
+        &client_db,
+        cr.interface(),
+        &cw.interface,
+        .client,
+        &client_conflicts,
     );
     thread.join();
     if (srv_ctx.err) |e| return e;
@@ -493,8 +616,14 @@ test "TCP sync: client ahead fast-forwards server" {
     defer server_db.deinit();
 
     const eid = try client_db.createEntry(.{
-        .parent_hash = null, .path = "", .title = "Entry",
-        .description = "", .url = "", .username = "u", .password = "v1", .notes = "",
+        .parent_hash = null,
+        .path = "",
+        .title = "Entry",
+        .description = "",
+        .url = "",
+        .username = "u",
+        .password = "v1",
+        .notes = "",
     });
     const v1_hash = client_db.listEntries()[0].head_hash;
 
@@ -519,8 +648,14 @@ test "TCP sync: client ahead fast-forwards server" {
 
     // Advance client to v2.
     _ = try client_db.updateEntry(eid, .{
-        .parent_hash = v1_hash, .path = "", .title = "Entry",
-        .description = "", .url = "", .username = "u", .password = "v2", .notes = "",
+        .parent_hash = v1_hash,
+        .path = "",
+        .title = "Entry",
+        .description = "",
+        .url = "",
+        .username = "u",
+        .password = "v2",
+        .notes = "",
     });
 
     // Second sync: server should fast-forward to v2.
@@ -536,7 +671,12 @@ test "TCP sync: client ahead fast-forwards server" {
     var conflicts2: std.ArrayList(ConflictEntry) = .{};
     defer conflicts2.deinit(allocator);
     const client_result2 = syncSession(
-        allocator, &client_db, r2.interface(), &w2.interface, .client, &conflicts2,
+        allocator,
+        &client_db,
+        r2.interface(),
+        &w2.interface,
+        .client,
+        &conflicts2,
     );
     thread2.join();
     if (srv_ctx.err) |e| return e;
@@ -563,8 +703,14 @@ test "TCP sync: diverged entries produce conflict" {
     defer server_db.deinit();
 
     const eid = try client_db.createEntry(.{
-        .parent_hash = null, .path = "", .title = "Entry",
-        .description = "", .url = "", .username = "u", .password = "v0", .notes = "",
+        .parent_hash = null,
+        .path = "",
+        .title = "Entry",
+        .description = "",
+        .url = "",
+        .username = "u",
+        .password = "v0",
+        .notes = "",
     });
     const v0_hash = client_db.listEntries()[0].head_hash;
 
@@ -589,12 +735,24 @@ test "TCP sync: diverged entries produce conflict" {
 
     // Both sides independently update the same entry from the same parent.
     _ = try client_db.updateEntry(eid, .{
-        .parent_hash = v0_hash, .path = "", .title = "Entry",
-        .description = "", .url = "", .username = "u", .password = "client-edit", .notes = "",
+        .parent_hash = v0_hash,
+        .path = "",
+        .title = "Entry",
+        .description = "",
+        .url = "",
+        .username = "u",
+        .password = "client-edit",
+        .notes = "",
     });
     _ = try server_db.updateEntry(eid, .{
-        .parent_hash = v0_hash, .path = "", .title = "Entry",
-        .description = "", .url = "", .username = "u", .password = "server-edit", .notes = "",
+        .parent_hash = v0_hash,
+        .path = "",
+        .title = "Entry",
+        .description = "",
+        .url = "",
+        .username = "u",
+        .password = "server-edit",
+        .notes = "",
     });
 
     // Second sync: divergence → conflict.
@@ -610,7 +768,12 @@ test "TCP sync: diverged entries produce conflict" {
     var conflicts2: std.ArrayList(ConflictEntry) = .{};
     defer conflicts2.deinit(allocator);
     const client_result2 = syncSession(
-        allocator, &client_db, r2.interface(), &w2.interface, .client, &conflicts2,
+        allocator,
+        &client_db,
+        r2.interface(),
+        &w2.interface,
+        .client,
+        &conflicts2,
     );
     thread2.join();
     if (srv_ctx.err) |e| return e;
@@ -647,5 +810,158 @@ test "TCP sync: unencrypted database returns error before any IO" {
     try std.testing.expectError(
         error.UnencryptedDatabase,
         syncSession(allocator, &db, &stub_r, &stub_w.writer, .client, &conflicts),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Fetch tests
+// ---------------------------------------------------------------------------
+
+const TestFetchServerCtx = struct {
+    allocator: std.mem.Allocator,
+    db: *Database,
+    server: *std.net.Server,
+    err: ?anyerror = null,
+};
+
+fn testFetchServerFn(ctx: *TestFetchServerCtx) void {
+    const conn = ctx.server.accept() catch |e| {
+        ctx.err = e;
+        return;
+    };
+    defer conn.stream.close();
+    var r = conn.stream.reader(&.{});
+    var w = conn.stream.writer(&.{});
+    fetchServe(ctx.allocator, ctx.db, r.interface(), &w.interface) catch |e| {
+        ctx.err = e;
+    };
+}
+
+test "TCP fetch: client obtains a full copy of the server database" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var server_db = try Database.create(allocator, tmp.dir, "server", "pw");
+    defer server_db.deinit();
+    _ = try server_db.createEntry(.{
+        .parent_hash = null,
+        .path = "Work",
+        .title = "Entry A",
+        .description = "",
+        .url = "",
+        .username = "alice",
+        .password = "s3cr3t",
+        .notes = "",
+    });
+    _ = try server_db.createEntry(.{
+        .parent_hash = null,
+        .path = "",
+        .title = "Entry B",
+        .description = "",
+        .url = "",
+        .username = "bob",
+        .password = "pass2",
+        .notes = "",
+    });
+
+    const addr = try std.net.Address.parseIp("127.0.0.1", 0);
+    var listener = try addr.listen(.{});
+    defer listener.deinit();
+
+    var srv_ctx = TestFetchServerCtx{
+        .allocator = allocator,
+        .db = &server_db,
+        .server = &listener,
+    };
+    const thread = try std.Thread.spawn(.{}, testFetchServerFn, .{&srv_ctx});
+
+    const stream = try std.net.tcpConnectToAddress(listener.listen_address);
+    defer stream.close();
+    var cr = stream.reader(&.{});
+    var cw = stream.writer(&.{});
+
+    const fetch_result = fetchClient(allocator, "pw", tmp.dir, "client", cr.interface(), &cw.interface);
+    thread.join();
+    if (srv_ctx.err) |e| return e;
+    try fetch_result;
+
+    // The fetched database must contain all server entries.
+    var client_db = try Database.open(allocator, tmp.dir, "client", "pw");
+    defer client_db.deinit();
+    try std.testing.expectEqual(@as(usize, 2), client_db.listEntries().len);
+
+    // Verify one entry's content is readable via the same password.
+    var found_a = false;
+    for (client_db.listEntries()) |ie| {
+        if (std.mem.eql(u8, ie.title, "Entry A")) {
+            const e = try client_db.getEntry(ie.entry_id);
+            defer e.deinit(allocator);
+            try std.testing.expectEqualStrings("alice", e.username);
+            try std.testing.expectEqualStrings("s3cr3t", e.password);
+            found_a = true;
+        }
+    }
+    try std.testing.expect(found_a);
+}
+
+test "TCP fetch: wrong password cleans up and returns WrongPassword" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var server_db = try Database.create(allocator, tmp.dir, "server", "correct");
+    defer server_db.deinit();
+
+    const addr = try std.net.Address.parseIp("127.0.0.1", 0);
+    var listener = try addr.listen(.{});
+    defer listener.deinit();
+
+    var srv_ctx = TestFetchServerCtx{
+        .allocator = allocator,
+        .db = &server_db,
+        .server = &listener,
+    };
+    const thread = try std.Thread.spawn(.{}, testFetchServerFn, .{&srv_ctx});
+
+    // fetchClient bails out (WrongPassword) before sending a nonce, so the
+    // server thread would block forever if we called thread.join() with the
+    // connection still open. Close the stream explicitly first to unblock it.
+    const fetch_result: anyerror!void = blk: {
+        const stream = try std.net.tcpConnectToAddress(listener.listen_address);
+        defer stream.close(); // closes before leaving this block → server unblocks
+        var cr = stream.reader(&.{});
+        var cw = stream.writer(&.{});
+        break :blk fetchClient(
+            allocator,
+            "wrong",
+            tmp.dir,
+            "client",
+            cr.interface(),
+            &cw.interface,
+        );
+    };
+
+    thread.join(); // server got EOF/reset and exited
+    try std.testing.expectError(error.WrongPassword, fetch_result);
+    // fetchClient must have removed the partially-created directory.
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile("client/header"));
+}
+
+test "TCP fetch: unencrypted server database returns error before any IO" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var db = try Database.create(allocator, tmp.dir, "plain", null);
+    defer db.deinit();
+
+    var stub_r = std.Io.Reader.fixed(&[_]u8{});
+    var stub_w: std.Io.Writer.Allocating = .init(allocator);
+    defer stub_w.deinit();
+
+    try std.testing.expectError(
+        error.UnencryptedDatabase,
+        fetchServe(allocator, &db, &stub_r, &stub_w.writer),
     );
 }
