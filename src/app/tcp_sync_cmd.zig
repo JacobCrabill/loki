@@ -43,30 +43,35 @@ pub fn serve(
     defer allocator.free(port_str);
     try stderr.writeAll(port_str);
 
-    const conn = try server.accept();
-    defer conn.stream.close();
+    while (true) {
+        const conn = try server.accept();
+        defer conn.stream.close();
 
-    var r = conn.stream.reader(&.{});
-    var w = conn.stream.writer(&.{});
-    const ri = r.interface();
-    const wi = &w.interface;
+        var r = conn.stream.reader(&.{});
+        var w = conn.stream.writer(&.{});
+        const ri = r.interface();
+        const wi = &w.interface;
 
-    // Read the one-byte protocol discriminator to decide which protocol to run.
-    var disc: [1]u8 = undefined;
-    try ri.readSliceAll(&disc);
+        // Read the one-byte protocol discriminator to decide which protocol to run.
+        var disc: [1]u8 = undefined;
+        try ri.readSliceAll(&disc);
 
-    switch (disc[0]) {
-        tcp_sync.protocol_sync => {
-            var conflicts: std.ArrayList(ConflictEntry) = .{};
-            defer conflicts.deinit(allocator);
-            const result = try tcp_sync.syncSession(allocator, &db, ri, wi, .server, &conflicts);
-            try printResult(allocator, result);
-        },
-        tcp_sync.protocol_fetch => {
-            try tcp_sync.fetchServe(allocator, &db, ri, wi);
-            try stderr.writeAll("Fetch served successfully.\n");
-        },
-        else => return error.UnknownProtocol,
+        switch (disc[0]) {
+            tcp_sync.protocol_sync => {
+                var conflicts: std.ArrayList(ConflictEntry) = .{};
+                defer conflicts.deinit(allocator);
+                const result = try tcp_sync.syncSession(allocator, &db, ri, wi, .server, &conflicts);
+                try printResult(allocator, result);
+            },
+            tcp_sync.protocol_fetch => {
+                try tcp_sync.fetchServe(allocator, &db, ri, wi);
+                try stderr.writeAll("Fetch served successfully.\n");
+            },
+            else => {
+                std.debug.print("error: UnknownProtocol\n", .{});
+                continue;
+            },
+        }
     }
 }
 
