@@ -1,16 +1,21 @@
 const std = @import("std");
 const builtin = @import("builtin");
+
 const cipher = @import("../crypto/cipher.zig");
-const index_mod = @import("index.zig");
-const object = @import("object.zig");
-const sync_mod = @import("sync.zig");
-const Database = @import("database.zig").Database;
+const index_mod = @import("../store/index.zig");
+const object = @import("../store/object.zig");
+const database = @import("../store/database.zig");
+const merge = @import("../model/merge.zig");
+
+const sync = @import("core.zig");
 
 const AEAD = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
 const Hkdf = std.crypto.kdf.hkdf.HkdfSha256;
 
-pub const SyncResult = sync_mod.SyncResult;
-pub const ConflictEntry = sync_mod.ConflictEntry;
+const Database = database.Database;
+const SyncResult = sync.SyncResult;
+const ConflictEntry = merge.ConflictEntry;
+
 pub const Role = enum { client, server };
 
 /// One-byte protocol discriminator sent by the client at the start of a connection.
@@ -370,13 +375,13 @@ pub fn syncSession(
             try sendIndex(allocator, &session, db);
             var remote_idx = try recvIndex(allocator, &session, db);
             defer remote_idx.deinit();
-            break :blk try sync_mod.mergeIndexes(allocator, db, &db.index, &remote_idx, conflicts_out);
+            break :blk try sync.mergeIndexes(allocator, db, &db.index, &remote_idx, conflicts_out);
         },
         .server => blk: {
             var remote_idx = try recvIndex(allocator, &session, db);
             defer remote_idx.deinit();
             try sendIndex(allocator, &session, db);
-            break :blk try sync_mod.mergeIndexes(allocator, db, &db.index, &remote_idx, conflicts_out);
+            break :blk try sync.mergeIndexes(allocator, db, &db.index, &remote_idx, conflicts_out);
         },
     };
 

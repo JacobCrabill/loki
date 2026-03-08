@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) void {
     const flags_dep = b.dependency("flags", .{ .optimize = optimize, .target = target });
 
     const mod = b.addModule("loki", .{
-        .root_source_file = b.path("src/lib/root.zig"),
+        .root_source_file = b.path("src/lib/loki.zig"),
         .target = target,
     });
     mod.addImport("zigzag", zigzag.module("zigzag"));

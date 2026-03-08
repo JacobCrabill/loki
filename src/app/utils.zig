@@ -85,3 +85,53 @@ pub fn openDb(allocator: std.mem.Allocator, db_path: []const u8, password: ?[]co
     defer base_dir.close();
     return loki.Database.open(allocator, base_dir, basename, password);
 }
+
+pub const default_port: u16 = 7777;
+
+/// Parse "host:port" into its components. Port defaults to `default_port`.
+pub fn parseHostPort(addr: []const u8) struct { host: []const u8, port: u16 } {
+    if (std.mem.lastIndexOfScalar(u8, addr, ':')) |colon| {
+        const port = std.fmt.parseInt(u16, addr[colon + 1 ..], 10) catch return .{
+            .host = addr,
+            .port = default_port,
+        };
+        return .{ .host = addr[0..colon], .port = port };
+    }
+    return .{ .host = addr, .port = default_port };
+}
+
+pub fn printMergeResult(allocator: std.mem.Allocator, w: *std.Io.Writer, result: loki.sync.core.SyncResult) !void {
+    const lines = try std.fmt.allocPrint(allocator,
+        \\Sync complete.
+        \\  Objects:       {d} pulled, {d} pushed
+        \\  Fast-forwards: {d} local, {d} remote
+        \\  New entries:   {d} to local, {d} to remote
+        \\  Conflicts:     {d}
+        \\
+    , .{
+        result.objects_pulled,
+        result.objects_pushed,
+        result.fast_forwarded,
+        result.remote_advanced,
+        result.new_to_local,
+        result.new_to_remote,
+        result.conflicts,
+    });
+    defer allocator.free(lines);
+    try w.writeAll(lines);
+    if (result.conflicts > 0) {
+        try w.writeAll("Open the TUI to resolve conflicts.\n");
+    }
+}
+
+pub fn runCommand(argv: []const []const u8, allocator: std.mem.Allocator) !void {
+    var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Inherit;
+    child.stderr_behavior = .Inherit;
+    const term = try child.spawnAndWait();
+    switch (term) {
+        .Exited => |code| if (code != 0) return error.CommandFailed,
+        else => return error.CommandFailed,
+    }
+}

@@ -4,7 +4,7 @@ const loki = @import("loki");
 
 const Entry = loki.Entry;
 const Database = loki.Database;
-const ConflictEntry = loki.store.sync.ConflictEntry;
+const ConflictEntry = loki.model.merge.ConflictEntry;
 
 // ---------------------------------------------------------------------------
 // Field helpers

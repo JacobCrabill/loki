@@ -1,9 +1,10 @@
 const std = @import("std");
-const app = @import("tui.zig").tui.app;
-const sync_cmd = @import("sync_cmd.zig");
-const tcp_sync_cmd = @import("tcp_sync_cmd.zig");
 const known_folders = @import("known-folders");
 const flags = @import("flags");
+
+const app = @import("tui.zig").tui.app;
+const utils = @import("utils.zig");
+const cmds = @import("cmds.zig");
 
 // ---------------------------------------------------------------------------
 // CLI structure
@@ -24,22 +25,15 @@ const Loki = struct {
     },
 
     command: ?union(enum) {
-        /// loki [db_path] sync <remote>
-        sync: struct {
-            positional: struct {
-                remote: []const u8,
-
-                pub const descriptions = .{
-                    .remote = "Remote database: local path or user@host:/path",
-                };
-            },
-
-            pub const description = "Sync the database with a remote copy";
+        merge: struct {
+            remote: []const u8,
+            local: ?[]const u8,
+            pub const descriptions = .{};
         },
 
         /// loki serve [-p PORT] [db_path]
         serve: struct {
-            port: u16 = tcp_sync_cmd.default_port,
+            port: u16 = utils.default_port,
 
             positional: struct {
                 db_path: ?[]const u8 = null,
@@ -54,8 +48,7 @@ const Loki = struct {
             pub const descriptions = .{ .port = "Port to listen on" };
         },
 
-        /// loki connect <addr> [db_path]
-        connect: struct {
+        sync: struct {
             positional: struct {
                 addr: []const u8,
                 db_path: ?[]const u8 = null,
@@ -69,7 +62,6 @@ const Loki = struct {
             pub const description = "Connect to a TCP server and sync";
         },
 
-        /// loki fetch <addr> [db_path]
         fetch: struct {
             positional: struct {
                 addr: []const u8,
@@ -85,10 +77,10 @@ const Loki = struct {
         },
 
         pub const descriptions = .{
-            .sync = "Sync with a remote (SSH or local path)",
-            .serve = "Listen for TCP sync/fetch connections",
-            .connect = "Sync with a TCP server",
             .fetch = "Download a database from a TCP server",
+            .merge = "Locally merge two databases",
+            .serve = "Listen for TCP sync/fetch connections",
+            .sync = "Sync with a remote server over the network",
         };
     } = null,
 
@@ -117,29 +109,32 @@ pub fn main() !void {
     };
     defer if (default_db_path) |p| allocator.free(p);
 
+    const stdout = std.fs.File.stdout();
+    var out = stdout.writer(&.{});
+
     if (cmd.command) |subcmd| {
         switch (subcmd) {
-            .sync => |s| {
-                const db_path = cmd.positional.db_path orelse default_db_path orelse
+            .merge => |m| {
+                const local_db = m.local orelse default_db_path orelse
                     fatal("cannot determine home directory");
-                try sync_cmd.run(allocator, db_path, s.positional.remote);
+                try cmds.merge.merge(allocator, &out.interface, local_db, m.remote);
             },
             .serve => |s| {
                 const db_path = s.positional.db_path orelse default_db_path orelse
                     fatal("cannot determine home directory");
-                try tcp_sync_cmd.serve(allocator, db_path, s.port);
+                try cmds.serve.serve(allocator, db_path, s.port);
             },
-            .connect => |s| {
+            .sync => |s| {
                 const db_path = s.positional.db_path orelse default_db_path orelse
                     fatal("cannot determine home directory");
-                const hp = tcp_sync_cmd.parseHostPort(s.positional.addr);
-                try tcp_sync_cmd.connect(allocator, db_path, hp.host, hp.port);
+                const hp = utils.parseHostPort(s.positional.addr);
+                try cmds.sync.syncNet(allocator, db_path, hp.host, hp.port);
             },
             .fetch => |s| {
                 const db_path = s.positional.db_path orelse default_db_path orelse
                     fatal("cannot determine home directory");
-                const hp = tcp_sync_cmd.parseHostPort(s.positional.addr);
-                try tcp_sync_cmd.fetch(allocator, db_path, hp.host, hp.port);
+                const hp = utils.parseHostPort(s.positional.addr);
+                try cmds.fetch.fetch(allocator, db_path, hp.host, hp.port);
             },
         }
     } else {

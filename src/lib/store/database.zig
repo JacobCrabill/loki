@@ -1,14 +1,15 @@
 const std = @import("std");
+
 const entry_mod = @import("../model/entry.zig");
 const object = @import("object.zig");
 const index_mod = @import("index.zig");
 const cipher = @import("../crypto/cipher.zig");
 const kdf = @import("../crypto/kdf.zig");
-const sync_mod = @import("sync.zig");
+const merge = @import("../model/merge.zig");
 
-pub const Entry = entry_mod.Entry;
-pub const IndexEntry = index_mod.IndexEntry;
-pub const ConflictEntry = sync_mod.ConflictEntry;
+const Entry = entry_mod.Entry;
+const IndexEntry = index_mod.IndexEntry;
+const ConflictEntry = merge.ConflictEntry;
 
 pub const Database = struct {
     allocator: std.mem.Allocator,

@@ -1,7 +1,11 @@
 const std = @import("std");
-const Database = @import("database.zig").Database;
-const index_mod = @import("index.zig");
+
+const Database = @import("../store/database.zig").Database;
+const index_mod = @import("../store/index.zig");
+const merge = @import("../model/merge.zig");
+
 const Index = index_mod.Index;
+const ConflictEntry = merge.ConflictEntry;
 
 pub const SyncResult = struct {
     objects_pulled: usize = 0,
@@ -16,14 +20,6 @@ pub const SyncResult = struct {
     new_to_remote: usize = 0,
     /// Genuinely diverged HEADs; local HEAD retained, conflict reported.
     conflicts: usize = 0,
-};
-
-/// A pair of diverged HEADs for the same entry.  Stored in the local database's
-/// `conflicts` file so the TUI can offer interactive resolution later.
-pub const ConflictEntry = struct {
-    entry_id: [20]u8,
-    local_hash: [20]u8,
-    remote_hash: [20]u8,
 };
 
 // Deferred index mutation to avoid invalidating iterators.
