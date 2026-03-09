@@ -16,15 +16,19 @@ const cmds = @import("cmds.zig");
 /// If a subcommand is given, an optional [db_path] positional *before* the
 /// subcommand keyword selects the database (e.g. `loki mydb sync remote`).
 const Loki = struct {
-    positional: struct {
-        db_path: ?[]const u8 = null,
-
-        pub const descriptions = .{
-            .db_path = "Database to open in the TUI (default: ~/.loki)",
-        };
-    },
-
     command: ?union(enum) {
+        open: struct {
+            positional: struct {
+                db_path: ?[]const u8 = null,
+
+                pub const descriptions = .{
+                    .db_path = "Database to open in the TUI (default: ~/.loki)",
+                };
+            },
+
+            pub const description = "Open a database";
+        },
+
         merge: struct {
             remote: []const u8,
             local: ?[]const u8,
@@ -77,6 +81,7 @@ const Loki = struct {
         },
 
         pub const descriptions = .{
+            .open = "Open a database (default command)",
             .fetch = "Download a database from a TCP server",
             .merge = "Locally merge two databases",
             .serve = "Listen for TCP sync/fetch connections",
@@ -130,15 +135,21 @@ pub fn main() !void {
                 const hp = utils.parseHostPort(s.positional.addr);
                 try cmds.sync.syncNet(allocator, db_path, hp.host, hp.port);
             },
-            .fetch => |s| {
-                const db_path = s.positional.db_path orelse default_db_path orelse
+            .fetch => |f| {
+                const db_path = f.positional.db_path orelse default_db_path orelse
                     fatal("cannot determine home directory");
-                const hp = utils.parseHostPort(s.positional.addr);
+                const hp = utils.parseHostPort(f.positional.addr);
                 try cmds.fetch.fetch(allocator, db_path, hp.host, hp.port);
+            },
+            .open => |o| {
+                const db_path = o.positional.db_path orelse default_db_path orelse
+                    fatal("cannot determine home directory");
+                try app.run(allocator, db_path);
             },
         }
     } else {
-        const db_path = cmd.positional.db_path orelse default_db_path orelse
+        // Default action with no arguments: Open the default database
+        const db_path = default_db_path orelse
             fatal("cannot determine home directory");
         try app.run(allocator, db_path);
     }
