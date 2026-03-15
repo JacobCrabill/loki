@@ -1,0 +1,26 @@
+[Unit]
+Description=Loki Password Manager Server
+After=network.target
+
+[Service]
+User=jacob
+Group=jacob
+
+WorkingDirectory=/home/jacob
+
+# Load LOKI_PASSWORD from a secrets file (chmod 600, owned by jacob)
+# Create with: echo "LOKI_PASSWORD=yourpassword" > ~/.config/loki/loki.env
+EnvironmentFile=/home/jacob/.config/loki/loki.env
+
+# NOTE: The EnvironmentFile only sets environment variables used in the expansion of ExecStart
+# This means all environment vars needed by the executable must be re-set here
+ExecStart=env LOKI_PASSWORD=${LOKI_PASSWORD} /home/jacob/.local/bin/loki serve
+
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

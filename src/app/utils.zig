@@ -54,6 +54,13 @@ pub const EchoGuard = switch (@import("builtin").os.tag) {
 };
 
 pub fn promptPassword(allocator: std.mem.Allocator) ![]u8 {
+    if (std.process.getEnvVarOwned(allocator, "LOKI_PASSWORD")) |pw| {
+        return pw;
+    } else |err| switch (err) {
+        error.EnvironmentVariableNotFound => {},
+        else => return err,
+    }
+
     const stderr = std.fs.File.stderr();
     try stderr.writeAll("Password: ");
 
