@@ -25,7 +25,6 @@ const Loki = struct {
                     .db_path = "Database to open in the TUI (default: ~/.loki)",
                 };
             },
-
             pub const description = "Open a database";
         },
 
@@ -81,7 +80,7 @@ const Loki = struct {
         },
 
         pub const descriptions = .{
-            .open = "Open a database (default command)",
+            .open = "Open a local database (default: ~/.loki)",
             .fetch = "Download a database from a TCP server",
             .merge = "Locally merge two databases",
             .serve = "Listen for TCP sync/fetch connections",
@@ -119,6 +118,11 @@ pub fn main() !void {
 
     if (cmd.command) |subcmd| {
         switch (subcmd) {
+            .open => |m| {
+                const db_path = m.positional.db_path orelse default_db_path orelse
+                    fatal("cannot determine home directory");
+                try app.run(allocator, db_path);
+            },
             .merge => |m| {
                 const local_db = m.local orelse default_db_path orelse
                     fatal("cannot determine home directory");

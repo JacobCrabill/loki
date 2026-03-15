@@ -22,14 +22,20 @@ pub fn serve(
         return error.UnencryptedDatabase;
     defer allocator.free(password);
 
-    var db = utils.openDb(allocator, db_path, password) catch |err| {
-        if (err == error.WrongPassword) {
-            try stderr.writeAll("Error: wrong password\n");
-            return;
-        }
-        return err;
-    };
-    defer db.deinit();
+    // We'll first ensure we can open the database before we start the server.
+    // However, because a user could interact with the database while the server
+    // is running, we want to only open and read it when we need to, then close
+    // it again.
+    {
+        var db = utils.openDb(allocator, db_path, password) catch |err| {
+            if (err == error.WrongPassword) {
+                try stderr.writeAll("Error: wrong password\n");
+                return;
+            }
+            return err;
+        };
+        defer db.deinit();
+    }
 
     const addr = try std.net.Address.parseIp("0.0.0.0", port);
     var server = try addr.listen(.{ .reuse_address = true });
@@ -47,6 +53,16 @@ pub fn serve(
         var w = conn.stream.writer(&.{});
         const ri = r.interface();
         const wi = &w.interface;
+
+        // Open the database now that we're ready to read and make edits
+        var db = utils.openDb(allocator, db_path, password) catch |err| {
+            if (err == error.WrongPassword) {
+                try stderr.writeAll("Error: wrong password\n");
+                return;
+            }
+            return err;
+        };
+        defer db.deinit();
 
         // Read the one-byte protocol discriminator to decide which protocol to run.
         var disc: [1]u8 = undefined;

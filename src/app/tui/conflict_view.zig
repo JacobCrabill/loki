@@ -313,11 +313,14 @@ pub const ConflictView = struct {
         const l = self.local_entry orelse return .none;
         const r = self.remote_entry orelse return .none;
 
-        // Ensure the entry still exists in the index before writing.
-        if (db.index.find(self.current.entry_id) == null) return .none;
+        // Look up the live index HEAD.  The user may have edited the entry in
+        // the viewer after the conflict was recorded, advancing the HEAD past
+        // self.current.local_hash.  Using the live HEAD as parent_hash ensures
+        // db.updateEntry's parent-hash validation always succeeds.
+        const ie = db.index.find(self.current.entry_id) orelse return .none;
 
         // Build merged entry.
-        const merged = self.buildMergedEntry(l, r) catch return .none;
+        const merged = self.buildMergedEntry(l, r, ie.head_hash) catch return .none;
         defer merged.deinit(self.allocator);
 
         // Persist: create a new version whose parent = local HEAD,
@@ -351,7 +354,7 @@ pub const ConflictView = struct {
         return .none;
     }
 
-    fn buildMergedEntry(self: *ConflictView, l: Entry, r: Entry) !Entry {
+    fn buildMergedEntry(self: *ConflictView, l: Entry, r: Entry, parent_hash: [20]u8) !Entry {
         const a = self.allocator;
 
         // Helper to resolve a single field.
@@ -387,7 +390,7 @@ pub const ConflictView = struct {
         errdefer a.free(notes);
 
         return Entry{
-            .parent_hash = self.current.local_hash,
+            .parent_hash = parent_hash,
             .merge_parent_hash = self.current.remote_hash,
             .path = path,
             .title = title,
@@ -486,10 +489,14 @@ pub const ConflictView = struct {
 
             // Mask passwords unless show_password is set.
             const is_pw = (fi == .password);
-            const lv_display = if (is_pw and !self.show_password)
-                try maskStr(allocator, local_val)
+            const effective_lv: []const u8 = if (fs.choice == .edited)
+                (fs.edited_value orelse local_val)
             else
-                try allocator.dupe(u8, local_val);
+                local_val;
+            const lv_display = if (is_pw and !self.show_password)
+                try maskStr(allocator, effective_lv)
+            else
+                try allocator.dupe(u8, effective_lv);
             defer allocator.free(lv_display);
             const rv_display = if (is_pw and !self.show_password)
                 try maskStr(allocator, remote_val)
@@ -498,9 +505,22 @@ pub const ConflictView = struct {
             defer allocator.free(rv_display);
 
             // Truncate long values to fit the column.
-            const lv_trunc = try truncateStr(allocator, firstLine(lv_display), half);
+            // For multi-line fields (notes), append … to signal there is more content.
+            const lv_first = firstLine(lv_display);
+            const lv_elided = if (lv_first.len < lv_display.len)
+                try std.fmt.allocPrint(allocator, "{s}…", .{lv_first})
+            else
+                try allocator.dupe(u8, lv_first);
+            defer allocator.free(lv_elided);
+            const rv_first = firstLine(rv_display);
+            const rv_elided = if (rv_first.len < rv_display.len)
+                try std.fmt.allocPrint(allocator, "{s}…", .{rv_first})
+            else
+                try allocator.dupe(u8, rv_first);
+            defer allocator.free(rv_elided);
+            const lv_trunc = try truncateStr(allocator, lv_elided, half);
             defer allocator.free(lv_trunc);
-            const rv_trunc = try truncateStr(allocator, firstLine(rv_display), half);
+            const rv_trunc = try truncateStr(allocator, rv_elided, half);
             defer allocator.free(rv_trunc);
 
             // Choose row style.
@@ -522,13 +542,17 @@ pub const ConflictView = struct {
                 const field_w: u16 = if (content_w > 16) content_w -| 16 else 20;
                 self.edit_area.setSize(field_w, 6);
                 const area_str = try self.edit_area.view(allocator);
+                // Do NOT embed '\n' in the prefix before passing to row_s.render():
+                // with inline_mode=true the renderer strips the newline, concatenating
+                // the prefix and the TextArea's first row onto a single oversized line.
                 const prefix = try std.fmt.allocPrint(
                     allocator,
-                    "{s} {s:<12}  (editing)\n",
+                    "{s} {s:<12}  (editing)",
                     .{ cursor_ch, fieldName(fi) },
                 );
                 defer allocator.free(prefix);
                 try w.writeAll(try row_s.render(allocator, prefix));
+                try w.writeByte('\n');
                 try w.writeAll(area_str);
                 try w.writeByte('\n');
             } else {
