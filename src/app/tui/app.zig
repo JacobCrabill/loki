@@ -206,6 +206,20 @@ fn viewUnlock(
     return zz.place.place(allocator, term_width, term_height, .center, .middle, box);
 }
 
+/// ASCII-art banner rendered above the create-database dialog.
+/// Each line is exactly 31 display columns wide (verified character-by-character).
+/// The backslash characters in the O and K glyphs are literal thanks to Zig's
+/// `\\` multiline string syntax, which performs no escape processing.
+const loki_art =
+    \\ __         _____      __  __     ______
+    \\/\ \       /\  __`\   /\ \/\ \   /\__  _\
+    \\\ \ \      \ \ \/\ \  \ \ \/'/'  \/_/\ \/
+    \\ \ \ \      \ \ \ \ \  \ \ , <      \ \ \
+    \\  \ \ \____  \ \ \_\ \  \ \ \\`\     \_\ \__
+    \\   \ \_____\  \ \_____\  \ \_\ \_\   /\_____\
+    \\    \/_____/   \/_____/   \/_/\/_/   \/_____/
+;
+
 fn viewCreate(
     c: *const CreateScreen,
     allocator: std.mem.Allocator,
@@ -218,7 +232,7 @@ fn viewCreate(
 
     var title_s = zz.Style{};
     title_s = title_s.bold(true);
-    try w.writeAll(try title_s.render(allocator, "Loki — Create Database"));
+    try w.writeAll(try title_s.render(allocator, "Create Database"));
     try w.writeAll("\n\n");
 
     var path_s = zz.Style{};
@@ -293,7 +307,14 @@ fn viewCreate(
     box_s = box_s.paddingAll(1);
     const box = try box_s.render(allocator, buf.written());
 
-    return zz.place.place(allocator, term_width, term_height, .center, .middle, box);
+    // Render the ASCII-art banner in Catppuccin Blue, then stack it above
+    // the dialog box (centered horizontally) with a blank line between them.
+    var art_s = zz.Style{};
+    art_s = art_s.fg(zz.Color.blue()).bold(true).width(45); // width of ascii art
+    const styled_art = try art_s.render(allocator, loki_art);
+    const combined = try zz.join.vertical(allocator, .center, &.{ styled_art, "", box });
+
+    return zz.place.place(allocator, term_width, term_height, .center, .middle, combined);
 }
 
 /// Clip each line of `str` to `max_width` visual columns (ANSI-aware).
