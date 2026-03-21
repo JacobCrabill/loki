@@ -118,8 +118,8 @@ pub fn main() !void {
 
     if (cmd.command) |subcmd| {
         switch (subcmd) {
-            .open => |m| {
-                const db_path = m.positional.db_path orelse default_db_path orelse
+            .open => |o| {
+                const db_path = o.positional.db_path orelse default_db_path orelse
                     fatal("cannot determine home directory");
                 try app.run(allocator, db_path);
             },
@@ -144,11 +144,6 @@ pub fn main() !void {
                     fatal("cannot determine home directory");
                 const hp = utils.parseHostPort(f.positional.addr);
                 try cmds.fetch.fetch(allocator, db_path, hp.host, hp.port);
-            },
-            .open => |o| {
-                const db_path = o.positional.db_path orelse default_db_path orelse
-                    fatal("cannot determine home directory");
-                try app.run(allocator, db_path);
             },
         }
     } else {
