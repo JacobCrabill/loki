@@ -254,19 +254,17 @@ pub const Browser = struct {
             for (0..row.depth * 2) |_| try w.writeByte(' ');
 
             if (row.is_folder) {
-                const text = try std.fmt.allocPrint(
-                    allocator,
-                    DIR_ICON ++ "{s}",
-                    .{row.label},
-                );
-                try w.writeAll(try s.render(allocator, text));
+                // Folder icon: always yellow; label inherits the row style.
+                var icon_s = zz.Style{};
+                icon_s = icon_s.fg(zz.Color.yellow()).inline_style(true);
+                try w.writeAll(try icon_s.render(allocator, DIR_ICON));
+                try w.writeAll(try s.render(allocator, row.label));
             } else {
-                const text = try std.fmt.allocPrint(
-                    allocator,
-                    ENTRY_ICON ++ "{s}",
-                    .{row.label},
-                );
-                try w.writeAll(try s.render(allocator, text));
+                // File icon: always blue; label inherits the row style.
+                var icon_s = zz.Style{};
+                icon_s = icon_s.fg(zz.Color.blue()).inline_style(true);
+                try w.writeAll(try icon_s.render(allocator, ENTRY_ICON));
+                try w.writeAll(try s.render(allocator, row.label));
             }
         }
 
@@ -284,7 +282,7 @@ pub const Browser = struct {
 
         var box_s = zz.Style{};
         if (focused) {
-            box_s = box_s.borderAll(zz.Border.thick).borderForeground(zz.Color.cyan());
+            box_s = box_s.borderAll(zz.Border.double).borderForeground(zz.Color.cyan());
         } else {
             box_s = box_s.borderAll(zz.Border.rounded);
         }

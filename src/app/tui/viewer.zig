@@ -440,7 +440,7 @@ pub const Viewer = struct {
 
         var box_s = zz.Style{};
         if (focused) {
-            box_s = box_s.borderAll(zz.Border.thick).borderForeground(zz.Color.cyan());
+            box_s = box_s.borderAll(zz.Border.double).borderForeground(zz.Color.cyan());
         } else {
             box_s = box_s.borderAll(zz.Border.rounded);
         }

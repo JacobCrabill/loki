@@ -315,6 +315,38 @@ fn clipLines(allocator: std.mem.Allocator, str: []const u8, max_width: usize) ![
     return out.toOwnedSlice(allocator);
 }
 
+/// Render a hint string of the form "key: action  key: action  …" with keys
+/// highlighted in cyan and action descriptions dimmed.  Pairs are separated by
+/// two consecutive spaces; the key and action within each pair are separated by
+/// ": ".
+fn renderHints(allocator: std.mem.Allocator, hints: []const u8) ![]const u8 {
+    var buf: std.Io.Writer.Allocating = .init(allocator);
+    defer buf.deinit();
+    const w = &buf.writer;
+
+    var key_s = zz.Style{};
+    key_s = key_s.fg(zz.Color.cyan()).inline_style(true);
+    var dim_s = zz.Style{};
+    dim_s = dim_s.dim(true).inline_style(true);
+
+    var first = true;
+    var pairs = std.mem.splitSequence(u8, hints, "  ");
+    while (pairs.next()) |pair| {
+        if (pair.len == 0) continue;
+        if (!first) try w.writeAll(try dim_s.render(allocator, "  "));
+        first = false;
+
+        if (std.mem.indexOf(u8, pair, ": ")) |ci| {
+            try w.writeAll(try key_s.render(allocator, pair[0..ci]));
+            try w.writeAll(try dim_s.render(allocator, ": "));
+            try w.writeAll(try dim_s.render(allocator, pair[ci + 2 ..]));
+        } else {
+            try w.writeAll(try dim_s.render(allocator, pair));
+        }
+    }
+    return allocator.dupe(u8, buf.written());
+}
+
 fn viewMain(
     m: *MainScreen,
     allocator: std.mem.Allocator,
@@ -329,15 +361,18 @@ fn viewMain(
         const conflict_raw = try m.conflict_view.view(allocator, term_width, pane_height);
         const conflict_padded = try zz.placeVertical(allocator, pane_height, .top, conflict_raw);
 
-        var status_s = zz.Style{};
-        status_s = status_s.dim(true);
-        const status_text = try std.fmt.allocPrint(
-            allocator,
-            " {s}  [conflict]  │  {s}",
-            .{ g_db_path, m.conflict_view.getHints() },
-        );
-        const status = try status_s.render(allocator, status_text);
-        return std.fmt.allocPrint(allocator, "{s}\n{s}", .{ conflict_padded, status });
+        var db_s = zz.Style{};
+        db_s = db_s.bold(true).fg(zz.Color.brightBlue()).inline_style(true);
+        var dim_s = zz.Style{};
+        dim_s = dim_s.dim(true).inline_style(true);
+        var status_buf: std.Io.Writer.Allocating = .init(allocator);
+        defer status_buf.deinit();
+        const sb = &status_buf.writer;
+        try sb.writeByte(' ');
+        try sb.writeAll(try db_s.render(allocator, g_db_path));
+        try sb.writeAll(try dim_s.render(allocator, "  [conflict]  │  "));
+        try sb.writeAll(try renderHints(allocator, m.conflict_view.getHints()));
+        return std.fmt.allocPrint(allocator, "{s}\n{s}", .{ conflict_padded, status_buf.written() });
     }
 
     const browser_width: u16 = @max(20, term_width / 3);
@@ -359,7 +394,6 @@ fn viewMain(
     const panes = try zz.joinHorizontal(allocator, &.{ left_padded, viewer_padded });
 
     const pane_label: []const u8 = if (m.active_pane == .browser) "[browser]" else "[viewer]";
-    const mod_label: []const u8 = if (m.viewer.isModified()) " [modified]" else "";
 
     // Conflict banner: shown when conflicts are pending but view is closed.
     const conflict_banner: []const u8 = if (m.pending_conflicts > 0) blk: {
@@ -390,23 +424,34 @@ fn viewMain(
         try allocator.dupe(u8, hints);
     defer allocator.free(full_hints);
 
-    var status_s = zz.Style{};
-    status_s = status_s.dim(true);
-    const status_text = if (m.pending_conflicts > 0)
-        try std.fmt.allocPrint(
-            allocator,
-            " {s}  {s}  {s}{s}  │  {s}",
-            .{ g_db_path, conflict_banner, pane_label, mod_label, full_hints },
-        )
-    else
-        try std.fmt.allocPrint(
-            allocator,
-            " {s}  {s}{s}  │  {s}",
-            .{ g_db_path, pane_label, mod_label, full_hints },
-        );
-    const status = try status_s.render(allocator, status_text);
+    // Build the status bar piece-by-piece so each element can carry its own
+    // style: bold+blue db name, dim pane label, yellow [modified], styled hints.
+    var db_s = zz.Style{};
+    db_s = db_s.bold(true).fg(zz.Color.brightBlue()).inline_style(true);
+    var dim_s = zz.Style{};
+    dim_s = dim_s.dim(true).inline_style(true);
 
-    return std.fmt.allocPrint(allocator, "{s}\n{s}", .{ panes, status });
+    var status_buf: std.Io.Writer.Allocating = .init(allocator);
+    defer status_buf.deinit();
+    const sb = &status_buf.writer;
+
+    try sb.writeByte(' ');
+    try sb.writeAll(try db_s.render(allocator, g_db_path));
+    try sb.writeAll(try dim_s.render(allocator, "  "));
+    if (m.pending_conflicts > 0) {
+        try sb.writeAll(conflict_banner);
+        try sb.writeAll(try dim_s.render(allocator, "  "));
+    }
+    try sb.writeAll(try dim_s.render(allocator, pane_label));
+    if (m.viewer.isModified()) {
+        var mod_s = zz.Style{};
+        mod_s = mod_s.fg(zz.Color.yellow()).inline_style(true);
+        try sb.writeAll(try mod_s.render(allocator, " [modified]"));
+    }
+    try sb.writeAll(try dim_s.render(allocator, "  │  "));
+    try sb.writeAll(try renderHints(allocator, full_hints));
+
+    return std.fmt.allocPrint(allocator, "{s}\n{s}", .{ panes, status_buf.written() });
 }
 
 fn saveEntry(m: *MainScreen, pa: std.mem.Allocator) void {
