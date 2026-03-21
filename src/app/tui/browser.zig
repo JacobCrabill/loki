@@ -277,6 +277,11 @@ pub const Browser = struct {
         const title_line = try title_s.render(allocator, "Entries");
         const content = try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ title_line, buf.written() });
 
+        // Pad content to exactly content_h rows so the bottom border always
+        // reaches the bottom of the pane.  zz.Style.height() is silently
+        // ignored by the renderer, so we pad the content directly instead.
+        const content_padded = try zz.placeVertical(allocator, content_h, .top, content);
+
         var box_s = zz.Style{};
         if (focused) {
             box_s = box_s.borderAll(zz.Border.thick).borderForeground(zz.Color.cyan());
@@ -285,7 +290,6 @@ pub const Browser = struct {
         }
         box_s = box_s.paddingLeft(1);
         box_s = box_s.width(content_w);
-        box_s = box_s.height(content_h);
-        return box_s.render(allocator, content);
+        return box_s.render(allocator, content_padded);
     }
 };

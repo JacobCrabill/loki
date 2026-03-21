@@ -4,4 +4,5 @@ pub const tui = struct {
     pub const viewer = @import("tui/viewer.zig");
     pub const generator = @import("tui/generator.zig");
     pub const history_view = @import("tui/history_view.zig");
+    pub const theme = @import("tui/theme.zig");
 };

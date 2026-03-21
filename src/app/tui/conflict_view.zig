@@ -422,7 +422,7 @@ pub const ConflictView = struct {
         width: u16,
         height: u16,
     ) ![]const u8 {
-        const content_w: u16 = width -| 4; // 2 borders + 1 left-pad + 1 slack
+        const content_w: u16 = width -| 3; // 1 left-pad + 2 borders
         const content_h: u16 = height -| 2; // top + bottom borders
 
         var buf: std.Io.Writer.Allocating = .init(allocator);
@@ -571,14 +571,18 @@ pub const ConflictView = struct {
             }
         }
 
+        // Pad content to exactly content_h rows so the bottom border always
+        // reaches the bottom of the pane.  zz.Style.height() is silently
+        // ignored by the renderer, so we pad the content directly instead.
+        const content_padded = try zz.placeVertical(allocator, content_h, .top, buf.written());
+
         // Box.
         var box_s = zz.Style{};
         box_s = box_s.borderAll(zz.Border.thick);
         box_s = box_s.borderForeground(zz.Color.yellow());
         box_s = box_s.paddingLeft(1);
         box_s = box_s.width(content_w);
-        box_s = box_s.height(content_h);
-        return box_s.render(allocator, buf.written());
+        return box_s.render(allocator, content_padded);
     }
 };
 

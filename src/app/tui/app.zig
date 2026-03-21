@@ -1,6 +1,7 @@
 const std = @import("std");
 const zz = @import("zigzag");
 const loki = @import("loki");
+const theme = @import("theme.zig");
 
 const IndexEntry = loki.store.index.IndexEntry;
 const Database = loki.Database;
@@ -750,6 +751,8 @@ pub const Model = struct {
 
 pub fn run(allocator: std.mem.Allocator, db_path: []const u8) !void {
     g_db_path = db_path;
+    try theme.catppuccin_mocha.apply();
+    defer theme.Theme.reset() catch {};
     var program = try zz.Program(Model).init(allocator);
     defer program.deinit();
     try program.run();

@@ -430,8 +430,13 @@ pub const Viewer = struct {
             try w.writeAll("No entry selected.\n\nSelect an entry in the browser pane.");
         }
 
-        const content_w: u16 = pane_width -| 4; // 1 left-pad + 2 borders + (?)1 right-pad(?)
+        const content_w: u16 = pane_width -| 4; // 1 left-pad + 2 borders
         const content_h: u16 = pane_height -| 2; // 2 borders (top + bottom)
+
+        // Pad content to exactly content_h rows so the bottom border always
+        // reaches the bottom of the pane.  zz.Style.height() is silently
+        // ignored by the renderer, so we pad the content directly instead.
+        const content_padded = try zz.placeVertical(allocator, content_h, .top, buf.written());
 
         var box_s = zz.Style{};
         if (focused) {
@@ -439,11 +444,9 @@ pub const Viewer = struct {
         } else {
             box_s = box_s.borderAll(zz.Border.rounded);
         }
-        if (focused) box_s = box_s.borderForeground(zz.Color.cyan());
         box_s = box_s.paddingLeft(1);
         box_s = box_s.width(content_w);
-        box_s = box_s.height(content_h);
-        return box_s.render(allocator, buf.written());
+        return box_s.render(allocator, content_padded);
     }
 
     fn renderField(
