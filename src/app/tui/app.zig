@@ -147,9 +147,11 @@ fn makeCreateScreen(pa: std.mem.Allocator) CreateScreen {
     var pw = zz.TextInput.init(pa);
     pw.setEchoMode(.password);
     pw.setPrompt("New password: ");
+    pw.prompt_style = pw.prompt_style.foreground_color(zz.Color.cyan());
     var confirm = zz.TextInput.init(pa);
     confirm.setEchoMode(.password);
     confirm.setPrompt("Confirm:      ");
+    confirm.prompt_style = confirm.prompt_style.foreground_color(zz.Color.cyan());
     confirm.focused = false;
     return .{
         .pw_input = pw,
