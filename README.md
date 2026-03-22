@@ -1,5 +1,7 @@
 # Loki: Simple Password Manager
 
+![Loki Logo](./docs/images/Loki-lock-logo.png)
+
 Loki is a basic password manager for those wanting full control over their password database,
 including where it is stored and how it is synced.
 
