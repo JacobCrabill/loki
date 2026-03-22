@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+concurrency:
+  # Cancels pending runs when a PR gets updated.
+  group: ${{ github.head_ref || github.run_id }}-${{ github.actor }}
+  cancel-in-progress: true
+
+permissions:
+  # Sets permission policy for `GITHUB_TOKEN`
+  contents: write
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+    runs-on: ubuntu-latest
+
+    container:
+      image: ghcr.io/jacobcrabill/alpine-zig:0.15.1
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Change if you need git info
+
+      - name: Run All Tests
+        run: zig build test
+
+      - name: Build x86 Linux gnu
+        run: zig build -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseSafe --prefix x86-linux-gnu
+
+      - name: Build x86 Linux musl
+        run: zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe --prefix x86-linux-musl
+
+      - name: Build aarch64 Linux musl
+        run: zig build -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSafe --prefix aarch64-linux-musl
+
+      - name: Build x86 MacOS
+        run: zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSafe --prefix x86-macos
+
+      - name: Build aarch64 MacOS
+        run: zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSafe --prefix aarch64-macos
+
+      - name: Build Windows
+        run: zig build -Dtarget=x86_64-windows -Doptimize=ReleaseSafe --prefix x86-windows
+
+      - name: Create Tarballs
+        run: |
+          tar -czf x86_64-linux-gnu.tar.gz   -C x86-linux-gnu/bin      loki
+          tar -czf x86_64-linux-musl.tar.gz  -C x86-linux-musl/bin     loki
+          tar -czf aarch64-linux-musl.tar.gz -C aarch64-linux-musl/bin loki
+          tar -czf x86_64-macos.tar.gz       -C x86-macos/bin          loki
+          tar -czf aarch64-macos.tar.gz      -C aarch64-macos/bin      loki
+          tar -czf x86_64-windows.tar.gz     -C x86-windows/bin        loki.exe
+
+      # Note: All artifacts will get bundled together into one tarball on the Actions page
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AllTargetBuilds
+          path: |
+            x86_64-linux-gnu.tar.gz
+            x86_64-linux-musl.tar.gz
+            aarch64-linux-musl.tar.gz
+            x86_64-macos.tar.gz
+            aarch64-macos.tar.gz
+            x86_64-windows.tar.gz
+
+  # The `release` job only runs if the push is a tag.
+  # It depends on the `test` job completing successfully.
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-and-test]
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: AllTargetBuilds
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          name: Release ${{ github.ref }}
+          body: "Automated release for tag ${{ github.ref }}"
+          files: |
+            x86_64-linux-gnu.tar.gz
+            x86_64-linux-musl.tar.gz
+            aarch64-linux-musl.tar.gz
+            x86_64-macos.tar.gz
+            aarch64-macos.tar.gz
+            x86_64-windows.tar.gz

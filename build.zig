@@ -20,6 +20,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/app/main.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = (optimize != .Debug),
             .imports = &.{
                 .{ .name = "loki", .module = mod },
                 .{ .name = "zigzag", .module = zigzag.module("zigzag") },
