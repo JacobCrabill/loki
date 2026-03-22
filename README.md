@@ -62,3 +62,9 @@ passwords, and copy data to the clipboard for easy logins.
 
 For an Android native application version of Loki, see
 [Loki-Android](https://github.com/JacobCrabill/loki-android)
+
+## Documentation
+
+- [Storage Format](./docs/storage-format.md)
+- [Network Fetch](./docs/tcp-fetch.md)
+- [Network Sync](./docs/tcp-sync.md)
