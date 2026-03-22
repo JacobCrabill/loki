@@ -34,7 +34,7 @@ pub fn fetch(
     const wi = &w.interface;
 
     // Announce the fetch protocol.
-    try wi.writeAll(&[_]u8{sync.net.protocol_fetch});
+    try wi.writeAll(&[_]u8{@intFromEnum(sync.net.Protocol.fetch)});
 
     // TODO: default to ~/.loki
     const dirname = std.fs.path.dirname(db_path) orelse ".";

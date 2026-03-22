@@ -67,16 +67,17 @@ pub fn serve(
         // Read the one-byte protocol discriminator to decide which protocol to run.
         var disc: [1]u8 = undefined;
         try ri.readSliceAll(&disc);
+        const proto: net_sync.Protocol = @enumFromInt(disc[0]);
 
-        switch (disc[0]) {
-            net_sync.protocol_sync => {
+        switch (proto) {
+            .sync => {
                 var conflicts: std.ArrayList(ConflictEntry) = .{};
                 defer conflicts.deinit(allocator);
                 const result = try net_sync.syncSession(allocator, &db, ri, wi, .server, &conflicts);
                 var stdout = std.fs.File.stdout().writer(&.{});
                 try utils.printMergeResult(allocator, &stdout.interface, result);
             },
-            net_sync.protocol_fetch => {
+            .fetch => {
                 try net_sync.fetchServe(allocator, &db, ri, wi);
                 try stderr.writeAll("Fetch served successfully.\n");
             },

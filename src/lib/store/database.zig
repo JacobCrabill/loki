@@ -175,19 +175,6 @@ pub const Database = struct {
         try self.index.removeEntry(entry_id);
     }
 
-    /// Update just the index HEAD pointer for `entry_id` without creating a new
-    /// object.  Used by conflict resolution to fast-forward or set a resolved
-    /// merge HEAD.  Unlike `updateEntry` this does NOT validate parent_hash.
-    pub fn setHead(
-        self: *Database,
-        entry_id: [20]u8,
-        head_hash: [20]u8,
-        title: []const u8,
-        path: []const u8,
-    ) !void {
-        try self.index.updateEntry(entry_id, head_hash, title, path);
-    }
-
     // -------------------------------------------------------------------------
     // Conflict persistence
     // -------------------------------------------------------------------------

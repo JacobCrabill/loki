@@ -48,16 +48,8 @@ pub fn generate(opts: Options, buf: []u8) []const u8 {
     }
 
     const len = @min(@as(usize, opts.length), buf.len);
-    var rng = std.Random.DefaultPrng.init(blk: {
-        var seed: u64 = undefined;
-        std.posix.getrandom(std.mem.asBytes(&seed)) catch {
-            seed = @intCast(std.time.milliTimestamp());
-        };
-        break :blk seed;
-    });
-    const rand = rng.random();
     for (0..len) |i| {
-        buf[i] = pool[rand.uintLessThan(usize, pool_len)];
+        buf[i] = pool[std.crypto.random.uintLessThan(usize, pool_len)];
     }
     return buf[0..len];
 }

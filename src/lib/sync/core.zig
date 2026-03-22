@@ -39,13 +39,13 @@ const Pending = struct {
 /// BFS from `descendant_hash` over both parent_hash and merge_parent_hash edges,
 /// looking for `ancestor_hash`.  Returns true if found (including equal hashes).
 /// Uses `db` to load objects; returns false on read error or after visiting
-/// more than 2000 nodes (cycle / very deep history guard).
+/// more than 65535 nodes (cycle / very deep history guard).
 fn isAncestor(
     allocator: std.mem.Allocator,
     db: *Database,
     ancestor_hash: [20]u8,
     descendant_hash: [20]u8,
-) bool {
+) !bool {
     if (std.mem.eql(u8, &ancestor_hash, &descendant_hash)) return true;
 
     // Work list: hashes yet to be explored.
@@ -53,8 +53,9 @@ fn isAncestor(
     defer queue.deinit(allocator);
     queue.append(allocator, descendant_hash) catch return false;
 
+    const max_ancestry_depth: usize = 65535;
     var visited: usize = 0;
-    while (queue.items.len > 0 and visited < 2000) {
+    while (queue.items.len > 0 and visited < max_ancestry_depth) {
         const current = queue.orderedRemove(0);
         visited += 1;
 
@@ -70,6 +71,10 @@ fn isAncestor(
             queue.append(allocator, mph) catch {};
         }
     }
+
+    if (visited >= max_ancestry_depth)
+        return error.AncestryTooDeep;
+
     return false;
 }
 
@@ -147,7 +152,7 @@ pub fn mergeIndexes(
         if (remote_idx.find(le.entry_id)) |re| {
             if (std.mem.eql(u8, &le.head_hash, &re.head_hash)) continue; // in sync
 
-            if (isAncestor(allocator, obj_db, le.head_hash, re.head_hash)) {
+            if (try isAncestor(allocator, obj_db, le.head_hash, re.head_hash)) {
                 // Remote is ahead → fast-forward local to remote HEAD.
                 try local_pending.append(allocator, .{
                     .entry_id = le.entry_id,
@@ -157,7 +162,7 @@ pub fn mergeIndexes(
                     .kind = .update,
                 });
                 result.fast_forwarded += 1;
-            } else if (isAncestor(allocator, obj_db, re.head_hash, le.head_hash)) {
+            } else if (try isAncestor(allocator, obj_db, re.head_hash, le.head_hash)) {
                 // Local is ahead → fast-forward remote to local HEAD.
                 try remote_pending.append(allocator, .{
                     .entry_id = le.entry_id,

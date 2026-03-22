@@ -19,13 +19,16 @@ const ConflictEntry = merge.ConflictEntry;
 pub const Role = enum { client, server };
 
 /// One-byte protocol discriminator sent by the client at the start of a connection.
-/// TODO: enum
-pub const protocol_sync: u8 = 0x01;
-pub const protocol_fetch: u8 = 0x02;
+pub const Protocol = enum(u8) {
+    sync = 0x01,
+    fetch = 0x02,
+    _,
+};
 
 /// Maximum encrypted message size (8 MiB). Protects against malformed length prefixes.
 const max_msg_len: u32 = 8 * 1024 * 1024;
 
+/// Type of each message being sent/received.
 const MsgType = enum(u8) {
     object_list = 0x01,
     object_data = 0x02,
@@ -256,15 +259,26 @@ fn recvObjects(allocator: std.mem.Allocator, session: *Session, db: *Database) !
             .done => break,
             .object_data => {
                 if (msg.len < 21) return error.InvalidMessage;
-                var h: [20]u8 = undefined;
-                @memcpy(&h, msg[1..21]);
-                const hex = object.hashToHex(h);
+                var claimed_hash: [20]u8 = undefined;
+                @memcpy(&claimed_hash, msg[1..21]);
+                const data = msg[21..];
+                // Verify that the data actually hashes to the claimed hash.
+                // Object filenames are SHA-1(plaintext), so for encrypted
+                // databases we must decrypt before hashing.  For plaintext
+                // databases the stored bytes are the plaintext directly.
+                const actual_hash = if (db.key) |k| blk: {
+                    const pt = try cipher.decrypt(allocator, k, data);
+                    defer allocator.free(pt);
+                    break :blk object.hash(pt);
+                } else object.hash(data);
+                if (!std.mem.eql(u8, &actual_hash, &claimed_hash)) return error.HashMismatch;
+                const hex = object.hashToHex(claimed_hash);
                 const f = db.objects_dir.createFile(&hex, .{ .exclusive = true }) catch |err| {
                     if (err == error.PathAlreadyExists) continue;
                     return err;
                 };
                 defer f.close();
-                try f.writeAll(msg[21..]);
+                try f.writeAll(data);
                 count += 1;
             },
             .err => return error.RemoteError,
@@ -401,7 +415,7 @@ pub fn syncSession(
 /// Server side of the fetch protocol: send the database header (unencrypted),
 /// establish an encrypted session, then push all objects and the index.
 ///
-/// The client must send `protocol_fetch` before calling this; the `serve`
+/// The client must send `Protocol.fetch` before calling this; the `serve`
 /// command reads the discriminator and dispatches here.
 pub fn fetchServe(
     allocator: std.mem.Allocator,
@@ -436,7 +450,7 @@ pub fn fetchServe(
 /// Client side of the fetch protocol: download a database from a server into
 /// a new local directory at `base_dir/name`.
 ///
-/// Call this after sending `protocol_fetch` to the server.
+/// Call this after sending `Protocol.fetch` to the server.
 /// Returns `error.WrongPassword` if the password does not match the server's
 /// header, and cleans up any partially-created files before returning.
 /// Returns `error.PathAlreadyExists` if `base_dir/name` already exists.

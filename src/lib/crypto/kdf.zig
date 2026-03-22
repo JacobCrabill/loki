@@ -129,6 +129,11 @@ pub fn writeHeader(header: Header, dir: std.fs.Dir) !void {
     try file.writeAll(&buf);
 }
 
+/// Minimum and maximum accepted Argon2id parameter values.
+/// These guard against DoS via extreme memory/iteration counts in a crafted header.
+pub const params_min: Params = .{ .t = 1, .m = 8, .p = 1 };
+pub const params_max: Params = .{ .t = 65535, .m = 4 * 1024 * 1024, .p = 255 };
+
 /// Read and parse `dir/header`.
 pub fn readHeader(dir: std.fs.Dir) !Header {
     const file = try dir.openFile("header", .{});
@@ -147,6 +152,13 @@ pub fn readHeader(dir: std.fs.Dir) !Header {
     const t = try r.takeInt(u32, .little);
     const m = try r.takeInt(u32, .little);
     const p: u24 = @intCast(try r.takeInt(u32, .little));
+
+    // Reject parameters outside safe operational bounds before running the KDF.
+    // An extremely large `m` would exhaust memory; `t = 0` or `p = 0` violates
+    // the Argon2 spec and may cause undefined behaviour in the underlying library.
+    if (t < params_min.t or t > params_max.t) return error.InvalidHeader;
+    if (m < params_min.m or m > params_max.m) return error.InvalidHeader;
+    if (p < params_min.p or p > params_max.p) return error.InvalidHeader;
 
     var salt: [32]u8 = undefined;
     try r.readSliceAll(&salt);
@@ -229,4 +241,61 @@ test "writeHeader and readHeader roundtrip" {
     // Key must still verify after a header roundtrip.
     const key = (try verifyPassword(allocator, "roundtrip", loaded)).?;
     try std.testing.expectEqual(result.key, key);
+}
+
+test "readHeader rejects out-of-bounds params" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Build a valid header binary, then patch individual fields to be out of bounds.
+    const result = try createHeader(std.testing.allocator, "pw", test_params);
+    try writeHeader(result.header, tmp.dir);
+
+    // Helper: read the raw header bytes, patch them, write back, expect InvalidHeader.
+    const raw_orig = try tmp.dir.readFileAlloc(std.testing.allocator, "header", 256);
+    defer std.testing.allocator.free(raw_orig);
+
+    // t = 0  (bytes 8..12)
+    {
+        var raw = try std.testing.allocator.dupe(u8, raw_orig);
+        defer std.testing.allocator.free(raw);
+        std.mem.writeInt(u32, raw[8..12], 0, .little);
+        const f = try tmp.dir.createFile("header", .{});
+        defer f.close();
+        try f.writeAll(raw);
+        try std.testing.expectError(error.InvalidHeader, readHeader(tmp.dir));
+    }
+
+    // m = 0  (bytes 12..16)
+    {
+        var raw = try std.testing.allocator.dupe(u8, raw_orig);
+        defer std.testing.allocator.free(raw);
+        std.mem.writeInt(u32, raw[12..16], 0, .little);
+        const f = try tmp.dir.createFile("header", .{});
+        defer f.close();
+        try f.writeAll(raw);
+        try std.testing.expectError(error.InvalidHeader, readHeader(tmp.dir));
+    }
+
+    // m = 0xFFFFFFFF  (would allocate ~4 TiB)  (bytes 12..16)
+    {
+        var raw = try std.testing.allocator.dupe(u8, raw_orig);
+        defer std.testing.allocator.free(raw);
+        std.mem.writeInt(u32, raw[12..16], 0xFFFFFFFF, .little);
+        const f = try tmp.dir.createFile("header", .{});
+        defer f.close();
+        try f.writeAll(raw);
+        try std.testing.expectError(error.InvalidHeader, readHeader(tmp.dir));
+    }
+
+    // p = 0  (bytes 16..20)
+    {
+        var raw = try std.testing.allocator.dupe(u8, raw_orig);
+        defer std.testing.allocator.free(raw);
+        std.mem.writeInt(u32, raw[16..20], 0, .little);
+        const f = try tmp.dir.createFile("header", .{});
+        defer f.close();
+        try f.writeAll(raw);
+        try std.testing.expectError(error.InvalidHeader, readHeader(tmp.dir));
+    }
 }

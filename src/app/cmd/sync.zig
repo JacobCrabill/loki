@@ -45,7 +45,7 @@ pub fn syncNet(
     const wi = &w.interface;
 
     // Send the protocol discriminator before anything else.
-    try wi.writeAll(&[_]u8{net_sync.protocol_sync});
+    try wi.writeAll(&[_]u8{@intFromEnum(net_sync.Protocol.sync)});
 
     var conflicts: std.ArrayList(ConflictEntry) = .{};
     defer conflicts.deinit(allocator);
