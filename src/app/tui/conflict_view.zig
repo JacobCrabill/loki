@@ -20,6 +20,7 @@ const Fields = enum(u8) {
     notes,
     max_field_count,
 };
+const FIELD_COUNT: usize = @intFromEnum(Fields.max_field_count);
 
 fn fieldName(f: Fields) []const u8 {
     return switch (f) {
@@ -30,6 +31,7 @@ fn fieldName(f: Fields) []const u8 {
         .username => "Username",
         .password => "Password",
         .notes => "Notes",
+        else => unreachable,
     };
 }
 
@@ -42,6 +44,7 @@ fn getField(e: Entry, f: Fields) []const u8 {
         .username => e.username,
         .password => e.password,
         .notes => e.notes,
+        else => unreachable,
     };
 }
 
@@ -83,7 +86,7 @@ pub const ConflictView = struct {
     remote_entry: ?Entry,
 
     // Per-field choices for the current conflict.
-    field_choices: [Fields.max_field_count]FieldState,
+    field_choices: [FIELD_COUNT]FieldState,
     field_cursor: u8,
     show_password: bool,
 
@@ -106,7 +109,7 @@ pub const ConflictView = struct {
             .current = undefined,
             .local_entry = null,
             .remote_entry = null,
-            .field_choices = [_]FieldState{.{}} ** Fields.max_field_count,
+            .field_choices = [_]FieldState{.{}} ** FIELD_COUNT,
             .field_cursor = 0,
             .show_password = false,
             .edit_mode = false,
@@ -171,7 +174,7 @@ pub const ConflictView = struct {
         self.current = self.pending.items[0];
         self.freeEntries();
         self.freeChoices();
-        self.field_choices = [_]FieldState{.{}} ** Fields.max_field_count;
+        self.field_choices = [_]FieldState{.{}} ** FIELD_COUNT;
         self.field_cursor = 0;
         self.edit_mode = false;
 
@@ -188,7 +191,7 @@ pub const ConflictView = struct {
         if (from_start) self.field_cursor = 0;
         const start = self.field_cursor;
         var i: u8 = start;
-        while (i < Fields.max_field_count) : (i += 1) {
+        while (i < FIELD_COUNT) : (i += 1) {
             if (self.fieldDiffers(i)) {
                 self.field_cursor = i;
                 return;
@@ -258,7 +261,7 @@ pub const ConflictView = struct {
 
     fn moveCursorDown(self: *ConflictView) void {
         var i = self.field_cursor + 1;
-        while (i < Fields.max_field_count) : (i += 1) {
+        while (i < FIELD_COUNT) : (i += 1) {
             if (self.fieldDiffers(i)) {
                 self.field_cursor = i;
                 return;
@@ -477,7 +480,7 @@ pub const ConflictView = struct {
         try w.writeByte('\n');
 
         // Field rows.
-        for (0..Fields.max_field_count) |i| {
+        for (0..FIELD_COUNT) |i| {
             const fi: Fields = @enumFromInt(i);
             const selected = (self.field_cursor == i);
             const differs = self.fieldDiffers(@intCast(i));

@@ -303,7 +303,7 @@ fn viewCreate(
     }
 
     var box_s = zz.Style{};
-    box_s = box_s.borderAll(zz.Border.rounded);
+    box_s = box_s.borderAll(zz.Border.double).borderForeground(zz.Color.blue());
     box_s = box_s.paddingAll(1);
     const box = try box_s.render(allocator, buf.written());
 
