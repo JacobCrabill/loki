@@ -21,6 +21,8 @@ pub const sync = struct {
     pub const net = @import("sync/net.zig");
 };
 
+pub const generator = @import("generator.zig");
+
 pub const Entry = model.entry.Entry;
 pub const Database = store.database.Database;
 
@@ -34,4 +36,5 @@ comptime {
     _ = store.database;
     _ = sync.core;
     _ = sync.net;
+    _ = generator;
 }

@@ -1,14 +1,8 @@
 const std = @import("std");
 const zz = @import("zigzag");
+const loki = @import("loki");
 
-const CHAR_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const CHAR_LOWER = "abcdefghijklmnopqrstuvwxyz";
-const CHAR_DIGITS = "0123456789";
-const CHAR_SYMBOLS = "!@#$%^&*()-_=+[]{}|;:',.<>?/`~";
-
-const MIN_LENGTH: u8 = 8;
-const MAX_LENGTH: u8 = 128;
-const DEFAULT_LENGTH: u8 = 20;
+const pw = loki.generator;
 
 /// Which option row the cursor is on in the generator dialog.
 const Row = enum { length, upper, lower, digits, symbols, preview, accept };
@@ -16,12 +10,8 @@ const ROW_COUNT = 7;
 
 pub const Generator = struct {
     active: bool,
-    length: u8,
-    use_upper: bool,
-    use_lower: bool,
-    use_digits: bool,
-    use_symbols: bool,
-    preview: [MAX_LENGTH]u8,
+    opts: pw.Options,
+    preview: [pw.MAX_LENGTH]u8,
     preview_len: usize,
     cursor_row: usize,
     /// Set to true when the user accepts. Caller reads the generated password via getPassword().
@@ -30,11 +20,7 @@ pub const Generator = struct {
     pub fn init() Generator {
         var g = Generator{
             .active = false,
-            .length = DEFAULT_LENGTH,
-            .use_upper = true,
-            .use_lower = true,
-            .use_digits = true,
-            .use_symbols = false,
+            .opts = .{},
             .preview = undefined,
             .preview_len = 0,
             .cursor_row = @intFromEnum(Row.preview),
@@ -60,45 +46,8 @@ pub const Generator = struct {
     }
 
     pub fn regenerate(self: *Generator) void {
-        // Build character pool.
-        var pool: [256]u8 = undefined;
-        var pool_len: usize = 0;
-        if (self.use_upper) {
-            @memcpy(pool[pool_len..][0..CHAR_UPPER.len], CHAR_UPPER);
-            pool_len += CHAR_UPPER.len;
-        }
-        if (self.use_lower) {
-            @memcpy(pool[pool_len..][0..CHAR_LOWER.len], CHAR_LOWER);
-            pool_len += CHAR_LOWER.len;
-        }
-        if (self.use_digits) {
-            @memcpy(pool[pool_len..][0..CHAR_DIGITS.len], CHAR_DIGITS);
-            pool_len += CHAR_DIGITS.len;
-        }
-        if (self.use_symbols) {
-            @memcpy(pool[pool_len..][0..CHAR_SYMBOLS.len], CHAR_SYMBOLS);
-            pool_len += CHAR_SYMBOLS.len;
-        }
-
-        if (pool_len == 0) {
-            // Fallback: at least lowercase letters.
-            @memcpy(pool[0..CHAR_LOWER.len], CHAR_LOWER);
-            pool_len = CHAR_LOWER.len;
-        }
-
-        const len = @min(@as(usize, self.length), MAX_LENGTH);
-        var rng = std.Random.DefaultPrng.init(blk: {
-            var seed: u64 = undefined;
-            std.posix.getrandom(std.mem.asBytes(&seed)) catch {
-                seed = @intCast(std.time.milliTimestamp());
-            };
-            break :blk seed;
-        });
-        const rand = rng.random();
-        for (0..len) |i| {
-            self.preview[i] = pool[rand.uintLessThan(usize, pool_len)];
-        }
-        self.preview_len = len;
+        const result = pw.generate(self.opts, &self.preview);
+        self.preview_len = result.len;
     }
 
     pub fn handleKey(self: *Generator, key: zz.KeyEvent) void {
@@ -121,14 +70,14 @@ pub const Generator = struct {
                 },
                 // +/- to adjust length when on the length row.
                 '+', '=' => if (self.cursor_row == @intFromEnum(Row.length)) {
-                    if (self.length < MAX_LENGTH) {
-                        self.length += 1;
+                    if (self.opts.length < pw.MAX_LENGTH) {
+                        self.opts.length += 1;
                         self.regenerate();
                     }
                 },
                 '-' => if (self.cursor_row == @intFromEnum(Row.length)) {
-                    if (self.length > MIN_LENGTH) {
-                        self.length -= 1;
+                    if (self.opts.length > pw.MIN_LENGTH) {
+                        self.opts.length -= 1;
                         self.regenerate();
                     }
                 },
@@ -141,14 +90,14 @@ pub const Generator = struct {
                 self.cursor_row -= 1;
             },
             .right => if (self.cursor_row == @intFromEnum(Row.length)) {
-                if (self.length < MAX_LENGTH) {
-                    self.length += 1;
+                if (self.opts.length < pw.MAX_LENGTH) {
+                    self.opts.length += 1;
                     self.regenerate();
                 }
             },
             .left => if (self.cursor_row == @intFromEnum(Row.length)) {
-                if (self.length > MIN_LENGTH) {
-                    self.length -= 1;
+                if (self.opts.length > pw.MIN_LENGTH) {
+                    self.opts.length -= 1;
                     self.regenerate();
                 }
             },
@@ -159,19 +108,19 @@ pub const Generator = struct {
     fn toggleOrAdjust(self: *Generator) void {
         switch (@as(Row, @enumFromInt(self.cursor_row))) {
             .upper => {
-                self.use_upper = !self.use_upper;
+                self.opts.use_upper = !self.opts.use_upper;
                 self.regenerate();
             },
             .lower => {
-                self.use_lower = !self.use_lower;
+                self.opts.use_lower = !self.opts.use_lower;
                 self.regenerate();
             },
             .digits => {
-                self.use_digits = !self.use_digits;
+                self.opts.use_digits = !self.opts.use_digits;
                 self.regenerate();
             },
             .symbols => {
-                self.use_symbols = !self.use_symbols;
+                self.opts.use_symbols = !self.opts.use_symbols;
                 self.regenerate();
             },
             .preview => self.regenerate(),
@@ -194,11 +143,11 @@ pub const Generator = struct {
         try w.writeAll(try title_s.render(allocator, "Generate Password"));
         try w.writeAll("\n\n");
 
-        try writeRow(w, allocator, self.cursor_row == @intFromEnum(Row.length), try std.fmt.allocPrint(allocator, "Length: {d}  (←/→ or -/+ to adjust)", .{self.length}));
-        try writeCheckRow(w, allocator, self.cursor_row == @intFromEnum(Row.upper), self.use_upper, "Uppercase (A-Z)");
-        try writeCheckRow(w, allocator, self.cursor_row == @intFromEnum(Row.lower), self.use_lower, "Lowercase (a-z)");
-        try writeCheckRow(w, allocator, self.cursor_row == @intFromEnum(Row.digits), self.use_digits, "Digits (0-9)");
-        try writeCheckRow(w, allocator, self.cursor_row == @intFromEnum(Row.symbols), self.use_symbols, "Symbols (!@#…)");
+        try writeRow(w, allocator, self.cursor_row == @intFromEnum(Row.length), try std.fmt.allocPrint(allocator, "Length: {d}  (←/→ or -/+ to adjust)", .{self.opts.length}));
+        try writeCheckRow(w, allocator, self.cursor_row == @intFromEnum(Row.upper), self.opts.use_upper, "Uppercase (A-Z)");
+        try writeCheckRow(w, allocator, self.cursor_row == @intFromEnum(Row.lower), self.opts.use_lower, "Lowercase (a-z)");
+        try writeCheckRow(w, allocator, self.cursor_row == @intFromEnum(Row.digits), self.opts.use_digits, "Digits (0-9)");
+        try writeCheckRow(w, allocator, self.cursor_row == @intFromEnum(Row.symbols), self.opts.use_symbols, "Symbols (!@#…)");
 
         try w.writeByte('\n');
 
