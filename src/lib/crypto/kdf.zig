@@ -88,6 +88,23 @@ pub fn createHeader(
     return .{ .header = .{ .params = params, .salt = salt, .verify_blob = vblob }, .key = key };
 }
 
+/// Check whether `key` correctly decrypts the verify-blob in `header`.
+/// Returns `true` if the key matches (i.e. was derived from the correct
+/// password for this header), `false` if the AEAD tag fails.
+/// This allows callers that have already run the KDF to check the verify-blob
+/// without re-deriving the key.
+pub fn checkVerifyBlob(key: [cipher.key_length]u8, header: Header) bool {
+    const ad = buildAd(header.params, header.salt);
+    const vblob = &header.verify_blob;
+    var nonce: [AEAD.nonce_length]u8 = undefined;
+    @memcpy(&nonce, vblob[0..AEAD.nonce_length]);
+    var tag: [AEAD.tag_length]u8 = undefined;
+    @memcpy(&tag, vblob[AEAD.nonce_length..cipher.overhead]);
+    var pt: [verify_plaintext.len]u8 = undefined;
+    AEAD.decrypt(&pt, vblob[cipher.overhead..], tag, &ad, nonce, key) catch return false;
+    return true;
+}
+
 /// Attempt to verify `password` against a stored `header`.
 /// Returns the derived key on success, or `null` if the password is wrong.
 pub fn verifyPassword(
@@ -96,19 +113,7 @@ pub fn verifyPassword(
     header: Header,
 ) !?[cipher.key_length]u8 {
     const key = try deriveKey(allocator, password, header.salt, header.params);
-
-    const ad = buildAd(header.params, header.salt);
-    const vblob = &header.verify_blob;
-    var nonce: [AEAD.nonce_length]u8 = undefined;
-    @memcpy(&nonce, vblob[0..AEAD.nonce_length]);
-    var tag: [AEAD.tag_length]u8 = undefined;
-    @memcpy(&tag, vblob[AEAD.nonce_length..cipher.overhead]);
-    var pt: [verify_plaintext.len]u8 = undefined;
-    AEAD.decrypt(&pt, vblob[cipher.overhead..], tag, &ad, nonce, key) catch |err| {
-        if (err == error.AuthenticationFailed) return null;
-        return err;
-    };
-    return key;
+    return if (checkVerifyBlob(key, header)) key else null;
 }
 
 /// Write `header` to `dir/header`.
@@ -134,16 +139,13 @@ pub fn writeHeader(header: Header, dir: std.fs.Dir) !void {
 pub const params_min: Params = .{ .t = 1, .m = 8, .p = 1 };
 pub const params_max: Params = .{ .t = 65535, .m = 4 * 1024 * 1024, .p = 255 };
 
-/// Read and parse `dir/header`.
-pub fn readHeader(dir: std.fs.Dir) !Header {
-    const file = try dir.openFile("header", .{});
-    defer file.close();
+/// Parse a `Header` from an already-loaded byte slice.
+/// Used when the caller already has the raw bytes in memory (e.g. received
+/// over the network) and does not want to go through the filesystem.
+pub fn parseHeader(buf: []const u8) !Header {
+    if (buf.len != header_size) return error.InvalidHeader;
 
-    var buf: [header_size]u8 = undefined;
-    const n = try file.readAll(&buf);
-    if (n != header_size) return error.InvalidHeader;
-
-    var r = std.Io.Reader.fixed(&buf);
+    var r = std.Io.Reader.fixed(buf);
 
     var magic: [8]u8 = undefined;
     try r.readSliceAll(&magic);
@@ -171,6 +173,18 @@ pub fn readHeader(dir: std.fs.Dir) !Header {
         .salt = salt,
         .verify_blob = verify_blob,
     };
+}
+
+/// Read and parse `dir/header`.
+pub fn readHeader(dir: std.fs.Dir) !Header {
+    const file = try dir.openFile("header", .{});
+    defer file.close();
+
+    var buf: [header_size]u8 = undefined;
+    const n = try file.readAll(&buf);
+    if (n != header_size) return error.InvalidHeader;
+
+    return parseHeader(&buf);
 }
 
 // ---------------------------------------------------------------------------
