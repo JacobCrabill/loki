@@ -34,9 +34,9 @@ needed to reach MVP status is a merge-conflict resolution view.
 - Version tracking of all changes
   - See past versions of an entry
   - No data is ever truly lost - roll back to a previous version of an entry at any time
-- Automatic syncing of the "database" to a remote server (**WIP**)
+- Automatic fecthing and syncing of a "database" to/from a remote server
   - Git-style push/pull synchronization
-  - Ability for the user to interactively resolve vesrion conflicts (**WIP**)
+  - Ability for the user to interactively resolve vesrion conflicts
 
 ## Storage Format
 
@@ -57,3 +57,8 @@ passwords, and copy data to the clipboard for easy logins.
 ![Generate a password](docs/images/generate-password.png)
 
 ![View an entry's history](docs/images/history-view.png)
+
+## Android Application
+
+For an Android native application version of Loki, see
+[Loki-Android](https://github.com/JacobCrabill/loki-android)
