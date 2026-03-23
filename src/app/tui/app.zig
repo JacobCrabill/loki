@@ -18,6 +18,20 @@ pub var g_db_path: []const u8 = "";
 // Internal types
 // =============================================================================
 
+/// ASCII-art banner rendered above the create-database dialog.
+/// Each line is exactly 31 display columns wide (verified character-by-character).
+/// The backslash characters in the O and K glyphs are literal thanks to Zig's
+/// `\\` multiline string syntax, which performs no escape processing.
+const loki_art =
+    \\ __         _____      __  __     ______
+    \\/\ \       /\  __`\   /\ \/\ \   /\__  _\
+    \\\ \ \      \ \ \/\ \  \ \ \/'/'  \/_/\ \/
+    \\ \ \ \      \ \ \ \ \  \ \ , <      \ \ \
+    \\  \ \ \____  \ \ \_\ \  \ \ \\`\     \_\ \__
+    \\   \ \_____\  \ \_____\  \ \_\ \_\   /\_____\
+    \\    \/_____/   \/_____/   \/_/\/_/   \/_____/
+;
+
 const Pane = enum { browser, viewer, conflict };
 
 const UnlockScreen = struct {
@@ -203,22 +217,15 @@ fn viewUnlock(
     box_s = box_s.paddingAll(1);
     const box = try box_s.render(allocator, buf.written());
 
-    return zz.place.place(allocator, term_width, term_height, .center, .middle, box);
-}
+    // Render the ASCII-art banner in our theme's blue, then stack it above
+    // the dialog box (centered horizontally) with a blank line between them.
+    var art_s = zz.Style{};
+    art_s = art_s.fg(zz.Color.blue()).bold(true).width(45); // width of ascii art
+    const styled_art = try art_s.render(allocator, loki_art);
+    const combined = try zz.join.vertical(allocator, .center, &.{ styled_art, "", box });
 
-/// ASCII-art banner rendered above the create-database dialog.
-/// Each line is exactly 31 display columns wide (verified character-by-character).
-/// The backslash characters in the O and K glyphs are literal thanks to Zig's
-/// `\\` multiline string syntax, which performs no escape processing.
-const loki_art =
-    \\ __         _____      __  __     ______
-    \\/\ \       /\  __`\   /\ \/\ \   /\__  _\
-    \\\ \ \      \ \ \/\ \  \ \ \/'/'  \/_/\ \/
-    \\ \ \ \      \ \ \ \ \  \ \ , <      \ \ \
-    \\  \ \ \____  \ \ \_\ \  \ \ \\`\     \_\ \__
-    \\   \ \_____\  \ \_____\  \ \_\ \_\   /\_____\
-    \\    \/_____/   \/_____/   \/_/\/_/   \/_____/
-;
+    return zz.place.place(allocator, term_width, term_height, .center, .middle, combined);
+}
 
 fn viewCreate(
     c: *const CreateScreen,
@@ -307,7 +314,7 @@ fn viewCreate(
     box_s = box_s.paddingAll(1);
     const box = try box_s.render(allocator, buf.written());
 
-    // Render the ASCII-art banner in Catppuccin Blue, then stack it above
+    // Render the ASCII-art banner in our theme's blue, then stack it above
     // the dialog box (centered horizontally) with a blank line between them.
     var art_s = zz.Style{};
     art_s = art_s.fg(zz.Color.blue()).bold(true).width(45); // width of ascii art
