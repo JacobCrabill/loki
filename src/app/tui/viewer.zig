@@ -87,6 +87,11 @@ pub const Viewer = struct {
     // Password generator dialog.
     generator: Generator,
 
+    // Notes display in view mode uses a Viewport (scrollable, fixed height).
+    // notes_content is owned by db_allocator so it outlives the frame arena.
+    notes_viewport: zz.Viewport,
+    notes_content: ?[]const u8,
+
     pub fn init(allocator: std.mem.Allocator) Viewer {
         return .{
             .entry = null,
@@ -106,6 +111,8 @@ pub const Viewer = struct {
             .notes_area = zz.TextArea.init(allocator),
             .notes_modified = false,
             .generator = Generator.init(),
+            .notes_viewport = zz.Viewport.init(allocator, 40, 4),
+            .notes_content = null,
         };
     }
 
@@ -118,6 +125,8 @@ pub const Viewer = struct {
         self.user_input.deinit();
         self.pw_input.deinit();
         self.notes_area.deinit();
+        self.notes_viewport.deinit();
+        if (self.notes_content) |nc| self.db_allocator.free(nc);
     }
 
     /// Set entry for viewing/editing an existing entry.
@@ -133,6 +142,7 @@ pub const Viewer = struct {
         self.notes_modified = false;
         self.syncInputs();
         self.blurAll();
+        self.setNotesContent(if (new_entry) |e| e.notes else "");
     }
 
     /// Prepare viewer for creating a new entry (starts in edit mode at Title).
@@ -156,6 +166,7 @@ pub const Viewer = struct {
         self.notes_area.setValue("") catch {};
         self.blurAll();
         self.focusCurrent();
+        self.setNotesContent("");
     }
 
     /// Returns true if the viewer is currently in edit mode.
@@ -173,7 +184,16 @@ pub const Viewer = struct {
     /// Gracefully exit edit mode (commits current field, stays in view mode).
     pub fn leaveEditMode(self: *Viewer) void {
         if (self.mode != .edit) return;
-        if (self.field_cursor == .notes) self.checkNotesModified();
+        if (self.field_cursor == .notes) {
+            self.checkNotesModified();
+            // Refresh the viewport with whatever was typed into the TextArea.
+            // getValue returns db_allocator-owned memory; take ownership directly.
+            if (self.notes_area.getValue(self.db_allocator)) |cur| {
+                if (self.notes_content) |old| self.db_allocator.free(old);
+                self.notes_content = cur;
+                self.notes_viewport.setContent(cur) catch {};
+            } else |_| {}
+        }
         self.mode = .view;
         self.blurAll();
     }
@@ -206,6 +226,15 @@ pub const Viewer = struct {
         self.user_input.blur();
         self.pw_input.blur();
         self.notes_area.blur();
+    }
+
+    /// Update the notes content owned by this Viewer and refresh the Viewport.
+    /// The string is duped onto db_allocator so it survives across frames.
+    fn setNotesContent(self: *Viewer, notes: []const u8) void {
+        if (self.notes_content) |old| self.db_allocator.free(old);
+        self.notes_content = @as(?[]const u8, self.db_allocator.dupe(u8, notes) catch null);
+        const nc = self.notes_content orelse "";
+        self.notes_viewport.setContent(nc) catch {};
     }
 
     fn focusCurrent(self: *Viewer) void {
@@ -322,8 +351,8 @@ pub const Viewer = struct {
                 },
                 else => {},
             },
-            .down => self.incrementFieldCursor(),
-            .up => self.decrementFieldCursor(),
+            .down => if (self.field_cursor == .notes) self.notes_viewport.scrollDown(1) else self.incrementFieldCursor(),
+            .up => if (self.field_cursor == .notes) self.notes_viewport.scrollUp(1) else self.decrementFieldCursor(),
             else => {},
         }
         return .none;
@@ -387,11 +416,26 @@ pub const Viewer = struct {
             return zz.place.place(allocator, pane_width, pane_height, .center, .middle, gen_view);
         }
 
-        // Size TextArea to fit inside the pane (content width = pane_width - 3 overhead,
-        // minus a few more for the "Notes: " label prefix area).
-        // TODO: No magic nubmers!
-        const notes_w: u16 = if (pane_width > 12) pane_width - 12 else 20;
-        self.notes_area.setSize(notes_w, 4);
+        // ── Layout dimensions ────────────────────────────────────────────────
+        // Must be computed before rendering so we can size both the edit
+        // TextArea and the view Viewport ahead of the renderField calls.
+        const content_w: u16 = pane_width -| 3; // 1 left-pad + 2 borders
+        const content_h: u16 = pane_height -| 2; // top + bottom borders
+
+        // Dynamic notes height: fill space not consumed by other fields.
+        // The -1 accounts for the phantom row that measure.height() adds for
+        // the final trailing '\n' in the content buffer.
+        const non_notes: usize = self.calcNonNotesRows(content_w);
+        const notes_h: u16 = blk: {
+            const ch: usize = content_h;
+            const available = if (ch > non_notes + 1) ch - non_notes - 1 else 2;
+            break :blk @intCast(@min(@max(available, 2), @as(usize, std.math.maxInt(u16))));
+        };
+
+        // Size the edit TextArea (used when editing notes).
+        self.notes_area.setSize(content_w, notes_h);
+        // Size the view Viewport (used when displaying notes in view mode).
+        self.notes_viewport.setSize(content_w, notes_h);
 
         var buf: std.Io.Writer.Allocating = .init(allocator);
         defer buf.deinit();
@@ -400,14 +444,13 @@ pub const Viewer = struct {
         if (self.entry != null or self.is_new) {
             const editing = self.mode == .edit;
 
-            // TODO: use loop to reduce duplicate code
-            try self.renderField(w, allocator, .path, editing);
-            try self.renderField(w, allocator, .title, editing);
-            try self.renderField(w, allocator, .description, editing);
-            try self.renderField(w, allocator, .url, editing);
-            try self.renderField(w, allocator, .username, editing);
-            try self.renderField(w, allocator, .password, editing);
-            try self.renderField(w, allocator, .notes, editing);
+            try self.renderField(w, allocator, .path, editing, content_w);
+            try self.renderField(w, allocator, .title, editing, content_w);
+            try self.renderField(w, allocator, .description, editing, content_w);
+            try self.renderField(w, allocator, .url, editing, content_w);
+            try self.renderField(w, allocator, .username, editing, content_w);
+            try self.renderField(w, allocator, .password, editing, content_w);
+            try self.renderField(w, allocator, .notes, editing, content_w);
 
             // Parent hash (read-only, italic/dim).
             if (!self.is_new) {
@@ -430,12 +473,8 @@ pub const Viewer = struct {
             try w.writeAll("No entry selected.\n\nSelect an entry in the browser pane.");
         }
 
-        const content_w: u16 = pane_width -| 4; // 1 left-pad + 2 borders
-        const content_h: u16 = pane_height -| 2; // 2 borders (top + bottom)
-
-        // Pad content to exactly content_h rows so the bottom border always
-        // reaches the bottom of the pane.  zz.Style.height() is silently
-        // ignored by the renderer, so we pad the content directly instead.
+        // Pad content to exactly content_h rows so the bottom border reaches
+        // the bottom of the pane.
         const content_padded = try zz.placeVertical(allocator, content_h, .top, buf.written());
 
         var box_s = zz.Style{};
@@ -455,6 +494,7 @@ pub const Viewer = struct {
         allocator: std.mem.Allocator,
         field: Fields,
         editing: bool,
+        content_w: u16,
     ) !void {
         const name = getFieldName(field);
         const display_val = self.getFieldValue(field, allocator);
@@ -465,33 +505,46 @@ pub const Viewer = struct {
         const mod_star: []const u8 = if (modified) "*" else "";
         const label = try std.fmt.allocPrint(allocator, "{s}{s}: ", .{ name, mod_star });
         try writer.writeAll(try labelStyle(selected, modified).render(allocator, label));
+
         if (editing_this) {
             if (self.inputFor(field)) |input| {
+                // TextArea (notes) renders on its own line; TextInputs are inline.
                 if (field == .notes) try writer.writeAll("\n");
                 try writer.writeAll(try input.view(allocator));
-                if (field == .notes) try writer.writeAll("\n");
+                // No extra '\n' after the TextArea — writeByte('\n') below is enough.
             }
         } else {
             var vs = zz.Style{};
             if (selected) vs = vs.fg(zz.Color.cyan());
+            const cw: usize = content_w;
+            // label is ASCII-only so its byte length equals its display width.
+            const lw: usize = label.len;
+
             if (field == .password and !self.show_password) {
-                // Password: masked in view mode unless show_password is set.
-                const hidden_pw = try allocator.alloc(u8, display_val.len);
-                @memset(hidden_pw, '*');
-                try writer.writeAll(try vs.render(allocator, hidden_pw));
+                // Masked password: fill with '*', capped to available line width.
+                const first_w = if (cw > lw) cw - lw else 0;
+                const star_count = @min(display_val.len, first_w);
+                const hidden = try allocator.alloc(u8, star_count);
+                @memset(hidden, '*');
+                try writer.writeAll(try vs.render(allocator, hidden));
             } else if (field == .notes) {
+                // Notes: render below the label using the pre-sized Viewport.
+                // The Viewport output is already exactly (content_w × notes_h)
+                // so no extra styling or padding is needed.
                 try writer.writeAll("\n");
-                try writer.writeAll(try vs.render(allocator, display_val));
+                try writer.writeAll(try self.notes_viewport.view(allocator));
             } else {
-                try writer.writeAll(try vs.render(allocator, display_val));
+                // All other fields: soft-wrap long values so they never overflow
+                // the pane width.
+                const first_w = if (cw > lw) cw - lw else 0;
+                const wrapped = try wrapText(allocator, display_val, first_w, cw);
+                try writer.writeAll(try vs.render(allocator, wrapped));
             }
         }
         try writer.writeByte('\n');
     }
 
     /// Get the raw value of the given field
-    ///
-    /// TODO: verify that the allocator is an arena!
     fn getFieldValue(self: *const Viewer, field: Fields, arena: std.mem.Allocator) []const u8 {
         return switch (field) {
             .path => self.path_input.getValue(),
@@ -517,6 +570,38 @@ pub const Viewer = struct {
         };
     }
 
+    /// Count display rows used by every rendered element except the notes
+    /// Viewport itself.  Drives the dynamic notes height calculation.
+    ///
+    /// Accounting (per full render of one existing entry):
+    ///   - Each field "Label: value\n" contributes countWrappedRows(value, …) rows.
+    ///   - The notes label line ("Notes: \n") contributes 1 row.
+    ///   - The trailing \n of the notes field (writeByte('\n') in renderField)
+    ///     does NOT add a blank row when another field follows immediately.
+    ///   - The parent row contributes 1 row.
+    ///   - measure.height counts one extra phantom row from the final trailing \n
+    ///     of the whole content buffer, accounted for by the -1 in view().
+    fn calcNonNotesRows(self: *const Viewer, cw: u16) usize {
+        if (self.entry == null and !self.is_new) return 0;
+        const w: usize = cw;
+        // Conservative label widths (name + "*: ") so we never under-count.
+        const LW_PATH: usize = 7; // "Path*: "
+        const LW_TITLE: usize = 8; // "Title*: "
+        const LW_DESC: usize = 14; // "Description*: "
+        const LW_URL: usize = 6; // "URL*: "
+        const LW_USER: usize = 11; // "Username*: "
+        var rows: usize = 0;
+        rows += countWrappedRows(self.path_input.getValue(), w -| LW_PATH, w);
+        rows += countWrappedRows(self.title_input.getValue(), w -| LW_TITLE, w);
+        rows += countWrappedRows(self.desc_input.getValue(), w -| LW_DESC, w);
+        rows += countWrappedRows(self.url_input.getValue(), w -| LW_URL, w);
+        rows += countWrappedRows(self.user_input.getValue(), w -| LW_USER, w);
+        rows += 1; // password (always 1 — masked)
+        rows += 1; // "Notes: " label line
+        if (!self.is_new and self.entry != null) rows += 1; // parent hash
+        return rows;
+    }
+
     fn incrementFieldCursor(self: *Viewer) void {
         const idx: u8 = @intFromEnum(self.field_cursor);
         const max_idx: u8 = @intFromEnum(Fields.field_max) - 1;
@@ -530,6 +615,79 @@ pub const Viewer = struct {
         }
     }
 };
+
+/// Soft-wrap `text` to fit in `first_w` display columns on the first segment
+/// and `rest_w` on every subsequent segment.  Hard newlines are honoured.
+/// Returns a freshly-allocated, newline-joined string.
+fn wrapText(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    first_w: usize,
+    rest_w: usize,
+) ![]const u8 {
+    if (text.len == 0) return allocator.dupe(u8, text);
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    const w = &out.writer;
+    var col: usize = 0;
+    var cap: usize = if (first_w > 0) first_w else rest_w;
+    var i: usize = 0;
+    while (i < text.len) {
+        if (text[i] == '\n') {
+            try w.writeByte('\n');
+            col = 0;
+            cap = rest_w;
+            i += 1;
+            continue;
+        }
+        const blen = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
+        const end = @min(i + blen, text.len);
+        const ch = text[i..end];
+        const cp = std.unicode.utf8Decode(ch) catch 0xFFFD;
+        const cw = zz.measure.charWidth(cp);
+        if (col > 0 and col + cw > cap) {
+            try w.writeByte('\n');
+            col = 0;
+            cap = rest_w;
+        }
+        try w.writeAll(ch);
+        col += cw;
+        i = end;
+    }
+    return allocator.dupe(u8, out.written());
+}
+
+/// Count how many display rows `text` occupies when soft-wrapped at `first_w`
+/// / `rest_w` columns.  Always returns at least 1.
+fn countWrappedRows(text: []const u8, first_w: usize, rest_w: usize) usize {
+    const cap0: usize = if (first_w > 0) first_w else rest_w;
+    if (cap0 == 0) return 1;
+    var rows: usize = 1;
+    var col: usize = 0;
+    var cap: usize = cap0;
+    var i: usize = 0;
+    while (i < text.len) {
+        if (text[i] == '\n') {
+            rows += 1;
+            col = 0;
+            cap = rest_w;
+            i += 1;
+            continue;
+        }
+        const blen = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
+        const end = @min(i + blen, text.len);
+        const cp = std.unicode.utf8Decode(text[i..end]) catch 0xFFFD;
+        const cw = zz.measure.charWidth(cp);
+        if (col > 0 and col + cw > cap) {
+            rows += 1;
+            col = 0;
+            cap = rest_w;
+        }
+        col += cw;
+        i = end;
+    }
+    return rows;
+}
 
 fn copyToClipboard(text: []const u8, allocator: std.mem.Allocator) void {
     const encoded_len = std.base64.standard.Encoder.calcSize(text.len);
