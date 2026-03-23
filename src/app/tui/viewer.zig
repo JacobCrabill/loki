@@ -419,7 +419,7 @@ pub const Viewer = struct {
         // ── Layout dimensions ────────────────────────────────────────────────
         // Must be computed before rendering so we can size both the edit
         // TextArea and the view Viewport ahead of the renderField calls.
-        const content_w: u16 = pane_width -| 3; // 1 left-pad + 2 borders
+        const content_w: u16 = pane_width -| 4; // 1 left-pad + 2 borders
         const content_h: u16 = pane_height -| 2; // top + bottom borders
 
         // Dynamic notes height: fill space not consumed by other fields.
@@ -435,7 +435,8 @@ pub const Viewer = struct {
         // Size the edit TextArea (used when editing notes).
         self.notes_area.setSize(content_w, notes_h);
         // Size the view Viewport (used when displaying notes in view mode).
-        self.notes_viewport.setSize(content_w, notes_h);
+        // NOTE: Removing 1 column for the scroll bar
+        self.notes_viewport.setSize(content_w - 1, notes_h);
 
         var buf: std.Io.Writer.Allocating = .init(allocator);
         defer buf.deinit();
