@@ -1,6 +1,12 @@
+//! Key Derivation Functions (KDF)
+//!
+//! Derive a cryptographic key from a password.
+//! The derived (secret) key is suitable for encryption.
 const std = @import("std");
-const argon2 = std.crypto.pwhash.argon2;
+
 const cipher = @import("cipher.zig");
+
+const argon2 = std.crypto.pwhash.argon2;
 const AEAD = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
 
 /// Argon2id parameters stored in the database header.
@@ -38,10 +44,11 @@ pub const Header = struct {
 const MAGIC = "LOKIDB\x00\x01";
 const header_size = 8 + 4 + 4 + 4 + 32 + verify_blob_len; // 96
 
-/// AEAD additional data: the non-verify_blob portion of the header (52 bytes).
-/// Binding these fields to the verify_blob prevents parameter downgrade attacks.
+/// The non-verify_blob portion of the AEAD header is 52 bytes.
 const ad_size = 8 + 4 + 4 + 4 + 32;
 
+/// AEAD additional data: the non-verify_blob portion of the header.
+/// Binding these fields to the verify_blob prevents parameter downgrade attacks.
 fn buildAd(params: Params, salt: [32]u8) [ad_size]u8 {
     var ad: [ad_size]u8 = undefined;
     @memcpy(ad[0..8], MAGIC);

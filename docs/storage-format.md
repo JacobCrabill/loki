@@ -51,7 +51,7 @@ storing the key or password themselves.
 
 ```
 Offset  Size  Field
-──────  ────  ─────────────────────────────────────────────────────────────
+──────  ────  ───────────────────────────────────────────
      0     8  magic: "LOKIDB\x00\x01"
      8     4  argon2 t  (u32 little-endian)
     12     4  argon2 m  (u32 little-endian, KiB)
@@ -83,8 +83,6 @@ the Poly1305 tag check.
 
 **Parameter bounds** enforced on read: `t ∈ [1, 65535]`, `m ∈ [8, 4194304]`, `p ∈ [1, 255]`. A
 header with out-of-range values is rejected before the KDF is invoked.
-
----
 
 ## Entry Objects
 
@@ -133,8 +131,6 @@ notes                   N bytes  UTF-8
 String fields use a 4-byte length prefix followed by the UTF-8 bytes. Empty strings are encoded as a
 4-byte zero.
 
----
-
 ## Version History
 
 Loki uses an append-only, content-addressed history modelled loosely on Git objects.
@@ -177,8 +173,6 @@ The entry ID is `SHA-1` of the genesis object's plaintext. Because it is derived
 content (the genesis serialisation), it is stable across all devices and all future versions of the
 entry.
 
----
-
 ## The `index` File
 
 The index is a compact in-memory data structure that maps entry IDs to their current HEAD hash and
@@ -209,8 +203,6 @@ The maximum title and path lengths are bounded by the u16 prefix (65535 bytes ea
 When saved to disk, the entire serialised index is encrypted as a single ChaCha20-Poly1305 blob
 (identical layout to an object file: nonce + tag + ciphertext). This means the number of entries,
 their titles, and their paths are all protected.
-
----
 
 ## The `conflicts` File
 

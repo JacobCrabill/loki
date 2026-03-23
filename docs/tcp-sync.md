@@ -88,15 +88,15 @@ The client drives the protocol. All steps are sequential.
 
 ```
 Client                                  Server
-  |──── nonce_C [32 bytes] ────────────>|   \
-  |<─── nonce_S [32 bytes] ─────────────|   / session establishment
+  |──── nonce_C [32 bytes] ───────────>|   \
+  |<─── nonce_S [32 bytes] ────────────|   / session establishment
 
   |──── OBJECT_LIST ──────────────────>|   C sends its object hashes
   |<─── OBJECT_LIST ───────────────────|   S sends its object hashes
 
-  |──── OBJECT_DATA × (S missing) ───>|   C pushes objects S lacks
+  |──── OBJECT_DATA × (S missing) ────>|   C pushes objects S lacks
   |──── DONE ─────────────────────────>|
-  |<─── OBJECT_DATA × (C missing) ────|   S pushes objects C lacks
+  |<─── OBJECT_DATA × (C missing) ─────|   S pushes objects C lacks
   |<─── DONE ──────────────────────────|
 
   |──── INDEX_DATA ───────────────────>|   C sends its encrypted index
@@ -145,12 +145,9 @@ prevents a compromised peer from poisoning the local object store.
 ## CLI Usage
 
 ```
-loki serve [port] [db_path]        listen for a single incoming sync
+loki serve [port] [db_path]        listen forever for incoming sync requests
                                     (default port: 7777, default db: ~/.loki)
 
 loki connect <host:port> [db_path] connect and sync with a server
                                     (default db: ~/.loki)
 ```
-
-The server accepts one connection, performs the sync, then exits. For repeated syncing, restart the
-server or wrap it in a loop.

@@ -1,3 +1,9 @@
+//! Authenticated Encryption with Associated Data (AEAD)
+//!
+//! Encryption and Decryption of data using Authenticated Encryption
+//! keys created via Key Derivation Functions (KDFs).
+//!
+//! We use the populer ChaCha20-Poly1305 algorithm.
 const std = @import("std");
 
 const AEAD = std.crypto.aead.chacha_poly.ChaCha20Poly1305;

@@ -11,16 +11,16 @@ pre-shared key.
 
 ```
 Client                                      Server
-  |──── challenge [32 bytes] ─────────────>|   1. client proves it can drive auth
-  |<─── header_len [4 bytes] ──────────────|   \
-  |<─── header [header_len bytes] ─────────|    2. server sends KDF header
-  |<─── hmac [32 bytes] ────────────────────|   /  + proof of password knowledge
+  |──── challenge [32 bytes] ─────────────>|  1. client proves it can drive auth
+  |<─── header_len [4 bytes] ──────────────| \
+  |<─── header [header_len bytes] ─────────|  2. server sends KDF header
+  |<─── hmac [32 bytes] ───────────────────| /   + proof of password knowledge
 
   (client verifies HMAC; aborts if invalid)
   (client runs Argon2id; aborts if wrong password)
 
-  |──── nonce_C [32 bytes] ─────────────── >|  \
-  |<─── nonce_S [32 bytes] ─────────────── |  /  3. encrypted session established
+  |──── nonce_C [32 bytes] ───────────── >| \
+  |<─── nonce_S [32 bytes] ────────────── | / 3. encrypted session established
 
   |<─── OBJECT_DATA × all objects ─────── |   4. server pushes entire object store
   |<─── DONE ──────────────────────────── |
