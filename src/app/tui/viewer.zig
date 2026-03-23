@@ -419,7 +419,7 @@ pub const Viewer = struct {
         // ── Layout dimensions ────────────────────────────────────────────────
         // Must be computed before rendering so we can size both the edit
         // TextArea and the view Viewport ahead of the renderField calls.
-        const content_w: u16 = pane_width -| 4; // 1 left-pad + 2 borders
+        const content_w: u16 = pane_width -| 4; // 1 left-pad + 2 borders + 1 right-pad
         const content_h: u16 = pane_height -| 2; // top + bottom borders
 
         // Dynamic notes height: fill space not consumed by other fields.

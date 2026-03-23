@@ -383,14 +383,22 @@ fn viewMain(
     term_width: u16,
     term_height: u16,
 ) ![]const u8 {
-    // Reserve 1 row for the status line; panes fill the rest.
-    const pane_height: u16 = if (term_height > 1) term_height - 1 else 1;
+    // Reserve 2 rows for the hints line and the status line; panes fill the rest.
+    const pane_height: u16 = if (term_height > 2) term_height - 2 else 1;
 
     // Conflict view takes the full width.
     if (m.active_pane == .conflict) {
         const conflict_raw = try m.conflict_view.view(allocator, term_width, pane_height);
         const conflict_padded = try zz.placeVertical(allocator, pane_height, .top, conflict_raw);
 
+        // Hints row (directly above the status row).
+        var hints_buf: std.Io.Writer.Allocating = .init(allocator);
+        defer hints_buf.deinit();
+        const hb = &hints_buf.writer;
+        try hb.writeByte(' ');
+        try hb.writeAll(try renderHints(allocator, m.conflict_view.getHints()));
+
+        // Status row (bottom line).
         var db_s = zz.Style{};
         db_s = db_s.bold(true).fg(zz.Color.brightBlue()).inline_style(true);
         var dim_s = zz.Style{};
@@ -400,9 +408,8 @@ fn viewMain(
         const sb = &status_buf.writer;
         try sb.writeByte(' ');
         try sb.writeAll(try db_s.render(allocator, g_db_path));
-        try sb.writeAll(try dim_s.render(allocator, "  [conflict]  │  "));
-        try sb.writeAll(try renderHints(allocator, m.conflict_view.getHints()));
-        return std.fmt.allocPrint(allocator, "{s}\n{s}", .{ conflict_padded, status_buf.written() });
+        try sb.writeAll(try dim_s.render(allocator, "  [conflict]"));
+        return std.fmt.allocPrint(allocator, "{s}\n{s}\n{s}", .{ conflict_padded, hints_buf.written(), status_buf.written() });
     }
 
     const browser_width: u16 = @max(20, term_width / 3);
@@ -454,8 +461,14 @@ fn viewMain(
         try allocator.dupe(u8, hints);
     defer allocator.free(full_hints);
 
-    // Build the status bar piece-by-piece so each element can carry its own
-    // style: bold+blue db name, dim pane label, yellow [modified], styled hints.
+    // Hints row (directly above the status row).
+    var hints_buf: std.Io.Writer.Allocating = .init(allocator);
+    defer hints_buf.deinit();
+    const hb = &hints_buf.writer;
+    try hb.writeByte(' ');
+    try hb.writeAll(try renderHints(allocator, full_hints));
+
+    // Status row (bottom line): db name, conflict banner, pane label, modified.
     var db_s = zz.Style{};
     db_s = db_s.bold(true).fg(zz.Color.brightBlue()).inline_style(true);
     var dim_s = zz.Style{};
@@ -478,10 +491,8 @@ fn viewMain(
         mod_s = mod_s.fg(zz.Color.yellow()).inline_style(true);
         try sb.writeAll(try mod_s.render(allocator, " [modified]"));
     }
-    try sb.writeAll(try dim_s.render(allocator, "  │  "));
-    try sb.writeAll(try renderHints(allocator, full_hints));
 
-    return std.fmt.allocPrint(allocator, "{s}\n{s}", .{ panes, status_buf.written() });
+    return std.fmt.allocPrint(allocator, "{s}\n{s}\n{s}", .{ panes, hints_buf.written(), status_buf.written() });
 }
 
 fn saveEntry(m: *MainScreen, pa: std.mem.Allocator) void {
