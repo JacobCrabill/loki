@@ -18,7 +18,7 @@ const Loki = struct {
                 db_path: ?[]const u8 = null,
 
                 pub const descriptions = .{
-                    .db_path = "Database to open in the TUI (default: ~/.loki)",
+                    .db_path = "Database to open in the TUI (default: ~/.local/share/loki/db)",
                 };
             },
             pub const description = "Open a database";
@@ -38,7 +38,7 @@ const Loki = struct {
                 db_path: ?[]const u8 = null,
 
                 pub const descriptions = .{
-                    .db_path = "Database to serve (default: ~/.loki)",
+                    .db_path = "Database to serve (default: ~/.local/share/loki/db)",
                 };
             },
 
@@ -54,7 +54,7 @@ const Loki = struct {
 
                 pub const descriptions = .{
                     .addr = "Server address: host or host:port",
-                    .db_path = "Local database to sync (default: ~/.loki)",
+                    .db_path = "Local database to sync (default: ~/.local/share/loki/db)",
                 };
             },
 
@@ -68,7 +68,7 @@ const Loki = struct {
 
                 pub const descriptions = .{
                     .addr = "Server address: host or host:port",
-                    .db_path = "Where to create the local database (default: ~/.loki)",
+                    .db_path = "Where to create the local database (default: ~/.local/share/loki/db)",
                 };
             },
 
@@ -76,7 +76,7 @@ const Loki = struct {
         },
 
         pub const descriptions = .{
-            .open = "Open a local database (default: ~/.loki)",
+            .open = "Open a local database (default: ~/.local/share/loki/db)",
             .fetch = "Download a database from a TCP server",
             .merge = "Locally merge two databases",
             .serve = "Listen for TCP sync/fetch connections",
@@ -97,11 +97,11 @@ pub fn main() !void {
 
     const cmd = flags.parse(raw_args, "loki", Loki, .{});
 
-    // Resolve the default database path (~/.loki).
+    // Resolve the default database path (~/.local/share/loki/db or platform equivalent).
     const default_db_path: ?[]const u8 = blk: {
-        const home = try known_folders.getPath(allocator, .home) orelse break :blk null;
-        defer allocator.free(home);
-        break :blk try std.fmt.allocPrint(allocator, "{s}/.loki", .{home});
+        const data = try known_folders.getPath(allocator, .data) orelse break :blk null;
+        defer allocator.free(data);
+        break :blk try std.fs.path.join(allocator, &.{ data, "loki", "db" });
     };
     defer if (default_db_path) |p| allocator.free(p);
 
