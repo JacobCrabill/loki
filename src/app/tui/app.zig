@@ -3,34 +3,22 @@ const zz = @import("zigzag");
 const loki = @import("loki");
 const theme = @import("theme.zig");
 
+const common = @import("common.zig");
+const Context = @import("Context.zig");
+const views = @import("views.zig");
+
 const IndexEntry = loki.store.index.IndexEntry;
 const Database = loki.Database;
 const ConflictEntry = loki.model.merge.ConflictEntry;
-const Browser = @import("browser.zig").Browser;
-const Viewer = @import("viewer.zig").Viewer;
-const HistoryView = @import("history_view.zig").HistoryView;
-const ConflictView = @import("conflict_view.zig").ConflictView;
 
-/// Set this before calling `run()`.
-pub var g_db_path: []const u8 = "";
+const Browser = views.Browser;
+const Viewer = views.Viewer;
+const HistoryView = views.HistoryView;
+const ConflictView = views.ConflictView;
 
 // =============================================================================
 // Internal types
 // =============================================================================
-
-/// ASCII-art banner rendered above the create-database dialog.
-/// Each line is exactly 31 display columns wide (verified character-by-character).
-/// The backslash characters in the O and K glyphs are literal thanks to Zig's
-/// `\\` multiline string syntax, which performs no escape processing.
-const loki_art =
-    \\ __         _____      __  __     ______
-    \\/\ \       /\  __`\   /\ \/\ \   /\__  _\
-    \\\ \ \      \ \ \/\ \  \ \ \/'/'  \/_/\ \/
-    \\ \ \ \      \ \ \ \ \  \ \ , <      \ \ \
-    \\  \ \ \____  \ \ \_\ \  \ \ \\`\     \_\ \__
-    \\   \ \_____\  \ \_____\  \ \_\ \_\   /\_____\
-    \\    \/_____/   \/_____/   \/_/\/_/   \/_____/
-;
 
 const Pane = enum { browser, viewer, conflict };
 
@@ -52,20 +40,8 @@ const CreateStage = enum {
     confirming,
 };
 
-const CreateScreen = struct {
-    pw_input: zz.TextInput,
-    confirm_input: zz.TextInput,
-    stage: CreateStage,
-    error_msg: ?[]const u8,
-
-    fn deinit(self: *CreateScreen) void {
-        self.pw_input.deinit();
-        self.confirm_input.deinit();
-    }
-};
-
 const MainScreen = struct {
-    db: Database,
+    ctx: *Context,
     browser: Browser,
     viewer: Viewer,
     history: HistoryView,
@@ -79,13 +55,12 @@ const MainScreen = struct {
         self.history.deinit();
         self.viewer.deinit();
         self.browser.deinit();
-        self.db.deinit();
     }
 };
 
 const Screen = union(enum) {
     unlock: UnlockScreen,
-    create: CreateScreen,
+    create: views.CreateScreen,
     main: MainScreen,
 };
 
@@ -106,17 +81,9 @@ fn detectDbState(db_path: []const u8) DbState {
     return .encrypted;
 }
 
-fn openDb(pa: std.mem.Allocator, db_path: []const u8, password: ?[]const u8) !Database {
-    const dirname = std.fs.path.dirname(db_path) orelse ".";
-    const basename = std.fs.path.basename(db_path);
-    var base_dir = try std.fs.cwd().openDir(dirname, .{});
-    defer base_dir.close();
-    return Database.open(pa, base_dir, basename, password);
-}
-
-fn makeMainScreen(pa: std.mem.Allocator, db: Database) !MainScreen {
+fn makeMainScreen(pa: std.mem.Allocator, ctx: *Context) !MainScreen {
     var screen = MainScreen{
-        .db = db,
+        .ctx = ctx,
         .browser = Browser.init(pa),
         .viewer = Viewer.init(pa),
         .history = HistoryView.init(pa),
@@ -124,18 +91,19 @@ fn makeMainScreen(pa: std.mem.Allocator, db: Database) !MainScreen {
         .pending_conflicts = 0,
         .active_pane = .browser,
     };
-    try screen.browser.populate(screen.db.listEntries());
+    var db: *loki.Database = try ctx.getDb();
+    try screen.browser.populate(db.listEntries());
     if (screen.browser.selectedEntryId()) |eid| {
-        const head_hash = findHeadHash(screen.db.listEntries(), eid);
-        const entry = screen.db.getEntry(eid) catch null;
+        const head_hash = findHeadHash(db.listEntries(), eid);
+        const entry = db.getEntry(eid) catch null;
         screen.viewer.setEntry(eid, head_hash, entry);
     }
 
     // Load any pending conflicts saved by a previous `loki sync`.
-    const conflicts = screen.db.loadConflicts(pa) catch &.{};
+    const conflicts = db.loadConflicts(pa) catch &.{};
     defer pa.free(conflicts);
     if (conflicts.len > 0) {
-        screen.conflict_view.load(&screen.db, conflicts);
+        screen.conflict_view.load(db, conflicts);
         screen.pending_conflicts = conflicts.len;
         screen.active_pane = .conflict;
     }
@@ -157,7 +125,7 @@ fn makeUnlockScreen(pa: std.mem.Allocator, err_msg: ?[]const u8) UnlockScreen {
     return .{ .input = input, .error_msg = err_msg };
 }
 
-fn makeCreateScreen(pa: std.mem.Allocator) CreateScreen {
+fn makeCreateScreen(pa: std.mem.Allocator) views.create.CreateScreen {
     var pw = zz.TextInput.init(pa);
     pw.setEchoMode(.password);
     pw.setPrompt("New password: ");
@@ -220,105 +188,8 @@ fn viewUnlock(
     // Render the ASCII-art banner in our theme's blue, then stack it above
     // the dialog box (centered horizontally) with a blank line between them.
     var art_s = zz.Style{};
-    art_s = art_s.fg(zz.Color.blue()).bold(true).width(45); // width of ascii art
-    const styled_art = try art_s.render(allocator, loki_art);
-    const combined = try zz.join.vertical(allocator, .center, &.{ styled_art, "", box });
-
-    return zz.place.place(allocator, term_width, term_height, .center, .middle, combined);
-}
-
-fn viewCreate(
-    c: *const CreateScreen,
-    allocator: std.mem.Allocator,
-    term_width: u16,
-    term_height: u16,
-) ![]const u8 {
-    var buf: std.Io.Writer.Allocating = .init(allocator);
-    defer buf.deinit();
-    const w = &buf.writer;
-
-    var title_s = zz.Style{};
-    title_s = title_s.bold(true);
-    try w.writeAll(try title_s.render(allocator, "Create Database"));
-    try w.writeAll("\n\n");
-
-    var path_s = zz.Style{};
-    path_s = path_s.dim(true);
-    try w.writeAll(try path_s.render(allocator, g_db_path));
-    try w.writeAll("\n\n");
-
-    // Render each field with a ▶ indicator on the active one; dim the inactive.
-    var arrow_s = zz.Style{};
-    arrow_s = arrow_s.fg(zz.Color.cyan());
-    arrow_s = arrow_s.bold(true);
-    const arrow = try arrow_s.render(allocator, "▶ ");
-
-    var dim_s = zz.Style{};
-    dim_s = dim_s.dim(true);
-
-    const pw_str = try c.pw_input.view(allocator);
-    const cf_str = try c.confirm_input.view(allocator);
-
-    switch (c.stage) {
-        .password => {
-            try w.writeAll(arrow);
-            try w.writeAll(pw_str);
-            try w.writeByte('\n');
-            try w.writeAll("  ");
-            try w.writeAll(try dim_s.render(allocator, cf_str));
-        },
-        .confirm => {
-            try w.writeAll("  ");
-            try w.writeAll(try dim_s.render(allocator, pw_str));
-            try w.writeByte('\n');
-            try w.writeAll(arrow);
-            try w.writeAll(cf_str);
-        },
-        .confirming => {
-            try w.writeAll("  ");
-            try w.writeAll(try dim_s.render(allocator, pw_str));
-            try w.writeByte('\n');
-            try w.writeAll("  ");
-            try w.writeAll(try dim_s.render(allocator, cf_str));
-        },
-    }
-
-    if (c.error_msg) |emsg| {
-        try w.writeByte('\n');
-        var err_s = zz.Style{};
-        err_s = err_s.fg(zz.Color.red());
-        try w.writeAll(try err_s.render(allocator, emsg));
-    }
-
-    if (c.stage == .confirming) {
-        try w.writeAll("\n\n");
-        try w.writeAll(arrow);
-        var confirm_s = zz.Style{};
-        confirm_s = confirm_s.bold(true);
-        try w.writeAll(try confirm_s.render(allocator, "Create this database?"));
-        try w.writeAll("\n\n");
-        var hint_s = zz.Style{};
-        hint_s = hint_s.dim(true);
-        try w.writeAll(try hint_s.render(allocator, "Y / Enter: yes   N / Esc: no"));
-    } else {
-        const hint: []const u8 = switch (c.stage) {
-            .confirm, .password => "Tab / Shift+Tab: prev field   Enter: confirm   Esc: quit",
-            .confirming => unreachable,
-        };
-        try w.writeAll("\n\nLeave blank for unencrypted.  ");
-        try w.writeAll(hint);
-    }
-
-    var box_s = zz.Style{};
-    box_s = box_s.borderAll(zz.Border.double).borderForeground(zz.Color.blue());
-    box_s = box_s.paddingAll(1);
-    const box = try box_s.render(allocator, buf.written());
-
-    // Render the ASCII-art banner in our theme's blue, then stack it above
-    // the dialog box (centered horizontally) with a blank line between them.
-    var art_s = zz.Style{};
-    art_s = art_s.fg(zz.Color.blue()).bold(true).width(45); // width of ascii art
-    const styled_art = try art_s.render(allocator, loki_art);
+    art_s = art_s.fg(zz.Color.blue()).bold(true).width(common.loki_art_len); // width of ascii art
+    const styled_art = try art_s.render(allocator, common.loki_art);
     const combined = try zz.join.vertical(allocator, .center, &.{ styled_art, "", box });
 
     return zz.place.place(allocator, term_width, term_height, .center, .middle, combined);
@@ -407,7 +278,7 @@ fn viewMain(
         defer status_buf.deinit();
         const sb = &status_buf.writer;
         try sb.writeByte(' ');
-        try sb.writeAll(try db_s.render(allocator, g_db_path));
+        try sb.writeAll(try db_s.render(allocator, m.ctx.db_path));
         try sb.writeAll(try dim_s.render(allocator, "  [conflict]"));
         return std.fmt.allocPrint(allocator, "{s}\n{s}\n{s}", .{ conflict_padded, hints_buf.written(), status_buf.written() });
     }
@@ -479,7 +350,7 @@ fn viewMain(
     const sb = &status_buf.writer;
 
     try sb.writeByte(' ');
-    try sb.writeAll(try db_s.render(allocator, g_db_path));
+    try sb.writeAll(try db_s.render(allocator, m.ctx.db_path));
     try sb.writeAll(try dim_s.render(allocator, "  "));
     if (m.pending_conflicts > 0) {
         try sb.writeAll(conflict_banner);
@@ -499,20 +370,21 @@ fn saveEntry(m: *MainScreen, pa: std.mem.Allocator) void {
     const entry = m.viewer.buildEntry() catch return;
     defer entry.deinit(pa);
 
+    const db: *loki.Database = m.ctx.getDb() catch @panic("Database not initialized!");
     if (m.viewer.is_new) {
         // Require at least a non-empty title.
         if (entry.title.len == 0) return;
-        const eid = m.db.createEntry(entry) catch return;
-        m.db.save() catch {};
-        m.browser.populate(m.db.listEntries()) catch {};
+        const eid = db.createEntry(entry) catch return;
+        db.save() catch {};
+        m.browser.populate(db.listEntries()) catch {};
         // head_hash == entry_id for a genesis entry.
-        const loaded = m.db.getEntry(eid) catch null;
+        const loaded = db.getEntry(eid) catch null;
         m.viewer.setEntry(eid, eid, loaded);
     } else if (m.viewer.entry_id) |eid| {
-        const new_hash = m.db.updateEntry(eid, entry) catch return;
-        m.db.save() catch {};
-        m.browser.populate(m.db.listEntries()) catch {};
-        const loaded = m.db.getEntry(eid) catch null;
+        const new_hash = db.updateEntry(eid, entry) catch return;
+        db.save() catch {};
+        m.browser.populate(db.listEntries()) catch {};
+        const loaded = db.getEntry(eid) catch null;
         m.viewer.setEntry(eid, new_hash, loaded);
     }
 }
@@ -522,53 +394,76 @@ fn saveEntry(m: *MainScreen, pa: std.mem.Allocator) void {
 // =============================================================================
 
 pub const Model = struct {
+    ctx: Context,
     screen: Screen,
 
-    pub const Msg = union(enum) {
-        key: zz.KeyEvent,
-    };
+    pub const Msg = common.Msg;
+    pub const Cmd = common.Cmd;
 
-    pub fn init(self: *Model, ctx: *zz.Context) zz.Cmd(Msg) {
-        const pa = ctx.persistent_allocator;
-        const db_path = g_db_path;
+    /// ZigZag calls 'init()' upon first 'run()' with only the zz Context.
+    /// We have additional context that should be stored, so set that up
+    /// before zz calls init.
+    pub fn create(ctx: Context) Model {
+        return .{
+            .ctx = ctx,
+            .screen = undefined,
+        };
+    }
+
+    pub fn init(self: *Model, zz_ctx: *zz.Context) common.Cmd {
+        const pa = zz_ctx.persistent_allocator;
+        const db_path = self.ctx.db_path;
 
         switch (detectDbState(db_path)) {
             .not_found => {
-                self.* = .{ .screen = .{ .create = makeCreateScreen(pa) } };
+                self.screen = .{ .create = views.CreateScreen.create(pa, &self.ctx) };
             },
             .plaintext => {
-                var db = openDb(pa, db_path, null) catch {
-                    self.* = .{ .screen = .{ .unlock = makeUnlockScreen(pa, "Failed to open database.") } };
+                // TODO: views.UnlockScreen.create(alloc, err_msg)
+                self.ctx.deinitDb();
+                self.ctx.db = common.openDb(pa, db_path, null) catch {
+                    self.screen = .{ .unlock = makeUnlockScreen(pa, "Failed to open database.") };
                     return .none;
                 };
-                const main = makeMainScreen(pa, db) catch {
-                    db.deinit();
-                    self.* = .{ .screen = .{ .unlock = makeUnlockScreen(pa, "Failed to load entries.") } };
+                const main = makeMainScreen(pa, &self.ctx) catch {
+                    self.ctx.deinitDb();
+                    self.screen = .{ .unlock = makeUnlockScreen(pa, "Failed to load entries.") };
                     return .none;
                 };
-                self.* = .{ .screen = .{ .main = main } };
+                self.screen = .{ .main = main };
             },
             .encrypted => {
-                self.* = .{ .screen = .{ .unlock = makeUnlockScreen(pa, null) } };
+                self.screen = .{ .unlock = makeUnlockScreen(pa, null) };
             },
         }
         return .none;
     }
 
-    pub fn update(self: *Model, msg: Msg, ctx: *zz.Context) zz.Cmd(Msg) {
+    pub fn update(self: *Model, msg: common.Msg, ctx: *zz.Context) common.Cmd {
         switch (msg) {
             .key => |k| return self.handleKey(k, ctx.persistent_allocator),
+            .set_view => |sv| switch (sv) {
+                .create => {
+                    self.screen = .{ .create = views.CreateScreen.create(ctx.persistent_allocator, &self.ctx) };
+                },
+                .unlock => |why| {
+                    self.screen = .{ .unlock = makeUnlockScreen(ctx.persistent_allocator, why) };
+                },
+                else => @panic("TODO: handle set_view in update()"),
+            },
         }
+        return .none;
     }
 
-    fn handleKey(self: *Model, k: zz.KeyEvent, pa: std.mem.Allocator) zz.Cmd(Msg) {
+    fn handleKey(self: *Model, k: zz.KeyEvent, pa: std.mem.Allocator) common.Cmd {
         switch (self.screen) {
             .unlock => |*u| {
                 switch (k.key) {
                     .escape => return .quit,
                     .enter => {
                         const pw = u.input.getValue();
-                        var db = openDb(pa, g_db_path, pw) catch |err| {
+                        self.ctx.deinitDb();
+                        self.ctx.db = common.openDb(pa, self.ctx.db_path, pw) catch |err| {
                             u.error_msg = if (err == error.WrongPassword)
                                 "Wrong password. Try again."
                             else
@@ -576,8 +471,8 @@ pub const Model = struct {
                             u.input.setValue("") catch {};
                             return .none;
                         };
-                        const main = makeMainScreen(pa, db) catch {
-                            db.deinit();
+                        const main = makeMainScreen(pa, &self.ctx) catch {
+                            self.ctx.deinitDb();
                             u.error_msg = "Failed to load entries.";
                             return .none;
                         };
@@ -588,107 +483,14 @@ pub const Model = struct {
                 }
             },
             .create => |*c| {
-                switch (c.stage) {
-                    .password => switch (k.key) {
-                        .escape => return .quit,
-                        // Tab, Shift+Tab, or Enter: advance to confirm field.
-                        .tab, .enter => {
-                            c.pw_input.blur();
-                            c.confirm_input.focus();
-                            c.stage = .confirm;
-                            c.error_msg = null;
-                        },
-                        else => c.pw_input.handleKey(k),
-                    },
-                    .confirm => switch (k.key) {
-                        .escape => return .quit,
-                        // Tab or Shift+Tab: cycle back to password field.
-                        .tab => {
-                            c.confirm_input.blur();
-                            c.pw_input.focus();
-                            c.stage = .password;
-                            c.error_msg = null;
-                        },
-                        .enter => {
-                            // Validate then move to yes/no confirmation.
-                            const pw = c.pw_input.getValue();
-                            const cf = c.confirm_input.getValue();
-                            if (!std.mem.eql(u8, pw, cf)) {
-                                c.error_msg = "Passwords do not match.";
-                                c.confirm_input.setValue("") catch {};
-                                c.confirm_input.blur();
-                                c.pw_input.setValue("") catch {};
-                                c.pw_input.focus();
-                                c.stage = .password;
-                                return .none;
-                            }
-                            c.confirm_input.blur();
-                            c.stage = .confirming;
-                            c.error_msg = null;
-                        },
-                        else => c.confirm_input.handleKey(k),
-                    },
-                    .confirming => switch (k.key) {
-                        .escape => {
-                            // Back to confirm field.
-                            c.confirm_input.focus();
-                            c.stage = .confirm;
-                        },
-                        .enter => {
-                            const pw = c.pw_input.getValue();
-                            const password: ?[]const u8 = if (pw.len > 0) pw else null;
-                            var db = createDb(pa, g_db_path, password) catch {
-                                c.error_msg = "Failed to create database.";
-                                c.confirm_input.focus();
-                                c.stage = .confirm;
-                                return .none;
-                            };
-                            db.save() catch {};
-                            const main = makeMainScreen(pa, db) catch {
-                                db.deinit();
-                                c.error_msg = "Failed to initialise database.";
-                                c.confirm_input.focus();
-                                c.stage = .confirm;
-                                return .none;
-                            };
-                            c.deinit();
-                            self.screen = .{ .main = main };
-                        },
-                        .char => |ch| switch (ch) {
-                            'y', 'Y' => {
-                                const pw = c.pw_input.getValue();
-                                const password: ?[]const u8 = if (pw.len > 0) pw else null;
-                                var db = createDb(pa, g_db_path, password) catch {
-                                    c.error_msg = "Failed to create database.";
-                                    c.confirm_input.focus();
-                                    c.stage = .confirm;
-                                    return .none;
-                                };
-                                db.save() catch {};
-                                const main = makeMainScreen(pa, db) catch {
-                                    db.deinit();
-                                    c.error_msg = "Failed to initialise database.";
-                                    c.confirm_input.focus();
-                                    c.stage = .confirm;
-                                    return .none;
-                                };
-                                c.deinit();
-                                self.screen = .{ .main = main };
-                            },
-                            'n', 'N' => {
-                                c.confirm_input.focus();
-                                c.stage = .confirm;
-                            },
-                            else => {},
-                        },
-                        else => {},
-                    },
-                }
+                return c.handleKey(k, pa);
             },
             .main => |*m| {
+                const db = self.ctx.getDb() catch return .none; // TODO: set_view unlock?
+
                 // Conflict view intercepts all keys when active.
                 if (m.active_pane == .conflict) {
-                    const sig = m.conflict_view.handleKey(k, &m.db);
+                    const sig = m.conflict_view.handleKey(k, db);
                     switch (sig) {
                         .none => {},
                         .closed => {
@@ -696,21 +498,21 @@ pub const Model = struct {
                             m.pending_conflicts = m.conflict_view.pending.items.len;
                             // Save remaining conflicts back to disk so they survive restarts.
                             if (m.pending_conflicts > 0) {
-                                m.db.saveConflicts(m.conflict_view.pending.items) catch {};
+                                db.saveConflicts(m.conflict_view.pending.items) catch {};
                             } else {
-                                m.db.clearConflicts();
+                                db.clearConflicts();
                             }
                             m.active_pane = .browser;
                         },
                         .all_resolved => {
                             m.pending_conflicts = 0;
-                            m.db.clearConflicts();
-                            m.browser.populate(m.db.listEntries()) catch {};
+                            db.clearConflicts();
+                            m.browser.populate(db.listEntries()) catch {};
                             m.active_pane = .browser;
                             // Reload viewer for currently selected entry.
                             if (m.browser.selectedEntryId()) |eid| {
-                                const head_hash = findHeadHash(m.db.listEntries(), eid);
-                                const entry = m.db.getEntry(eid) catch null;
+                                const head_hash = findHeadHash(db.listEntries(), eid);
+                                const entry = db.getEntry(eid) catch null;
                                 m.viewer.setEntry(eid, head_hash, entry);
                             }
                         },
@@ -720,7 +522,7 @@ pub const Model = struct {
 
                 // History mode intercepts all keys.
                 if (m.history.active) {
-                    const sig = m.history.handleKey(k, &m.db);
+                    const sig = m.history.handleKey(k, db);
                     switch (sig) {
                         .none => {
                             // Navigation: take preview and update viewer.
@@ -731,17 +533,17 @@ pub const Model = struct {
                         .closed => {
                             // Reload the current HEAD version into viewer.
                             const eid = m.history.entry_id;
-                            const head_hash = findHeadHash(m.db.listEntries(), eid);
-                            const entry = m.db.getEntry(eid) catch null;
+                            const head_hash = findHeadHash(db.listEntries(), eid);
+                            const entry = db.getEntry(eid) catch null;
                             m.viewer.setEntry(eid, head_hash, entry);
                             m.active_pane = .viewer;
                         },
                         .restored => {
                             // Entry was restored: repopulate browser, reload from db.
                             const eid = m.history.entry_id;
-                            m.browser.populate(m.db.listEntries()) catch {};
-                            const head_hash = findHeadHash(m.db.listEntries(), eid);
-                            const entry = m.db.getEntry(eid) catch null;
+                            m.browser.populate(db.listEntries()) catch {};
+                            const head_hash = findHeadHash(db.listEntries(), eid);
+                            const entry = db.getEntry(eid) catch null;
                             m.viewer.setEntry(eid, head_hash, entry);
                             m.active_pane = .viewer;
                         },
@@ -778,8 +580,8 @@ pub const Model = struct {
                         // Update viewer when browser selection changes (no unsaved edits).
                         if (!m.viewer.isModified()) {
                             if (m.browser.selectedEntryId()) |eid| {
-                                const head_hash = findHeadHash(m.db.listEntries(), eid);
-                                const entry = m.db.getEntry(eid) catch null;
+                                const head_hash = findHeadHash(db.listEntries(), eid);
+                                const entry = db.getEntry(eid) catch null;
                                 m.viewer.setEntry(eid, head_hash, entry);
                             } else {
                                 m.viewer.setEntry(null, null, null);
@@ -799,7 +601,7 @@ pub const Model = struct {
                             .show_history => {
                                 if (m.viewer.entry_id) |eid| {
                                     if (m.viewer.head_hash) |hh| {
-                                        m.history.show(&m.db, eid, hh) catch {};
+                                        m.history.show(db, eid, hh) catch {};
                                     }
                                 }
                             },
@@ -817,7 +619,7 @@ pub const Model = struct {
         const self_mut = @constCast(self);
         return switch (self_mut.screen) {
             .unlock => |*u| viewUnlock(u, ctx.allocator, ctx.width, ctx.height),
-            .create => |*c| viewCreate(c, ctx.allocator, ctx.width, ctx.height),
+            .create => |*c| c.view(ctx.allocator, ctx.width, ctx.height),
             .main => |*m| viewMain(m, ctx.allocator, ctx.width, ctx.height),
         } catch "Error rendering view.";
     }
@@ -828,6 +630,7 @@ pub const Model = struct {
             .create => |*c| c.deinit(),
             .main => |*m| m.deinit(),
         }
+        self.ctx.deinit();
     }
 };
 
@@ -836,10 +639,10 @@ pub const Model = struct {
 // =============================================================================
 
 pub fn run(allocator: std.mem.Allocator, db_path: []const u8) !void {
-    g_db_path = db_path;
     try theme.catppuccin_mocha.apply();
     defer theme.Theme.reset() catch {};
     var program = try zz.Program(Model).init(allocator);
     defer program.deinit();
+    program.model = Model.create(.{ .db_path = db_path });
     try program.run();
 }

@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
         .zigzag = .{
-            .url = "https://github.com/meszmate/zigzag/archive/21667da0f4ba34d1eae3f26e52b2f250a2308062.tar.gz",
-            .hash = "zigzag-0.1.2-YXwYS20gCwBHkWzwF2vwHINAIttgmmhbLWaE0hve5UHg",
+            .url = "https://github.com/JacobCrabill/zigzag/archive/a289bb29820ea1a4d44fc12aae688f51e889b3a7.tar.gz",
+            .hash = "zigzag-0.1.2-YXwYSzBkDQDw1Ljw21DwAdoQyZnaaT7Ykh6PLh0Wau1G",
         },
         .known_folders = .{
             .url = "git+https://github.com/ziglibs/known-folders.git#ab5cf5feb936fa3b72c95d3ad0c0c67791937ba1",
