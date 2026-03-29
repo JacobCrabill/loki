@@ -1,3 +1,4 @@
+//! Database unlock screen
 const std = @import("std");
 const loki = @import("loki");
 const zz = @import("zigzag");

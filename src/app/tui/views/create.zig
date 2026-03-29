@@ -1,3 +1,4 @@
+//! Database creation screen
 const std = @import("std");
 const zz = @import("zigzag");
 const loki = @import("loki");

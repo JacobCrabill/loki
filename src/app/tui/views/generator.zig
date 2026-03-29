@@ -8,6 +8,7 @@ const pw = loki.generator;
 const Row = enum { length, upper, lower, digits, symbols, preview, accept };
 const ROW_COUNT = 7;
 
+/// Password Generator
 pub const Generator = struct {
     active: bool,
     opts: pw.Options,

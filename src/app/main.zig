@@ -6,10 +6,6 @@ const app = @import("tui.zig").tui.app;
 const utils = @import("utils.zig");
 const cmds = @import("cmds.zig");
 
-// ---------------------------------------------------------------------------
-// CLI structure
-// ---------------------------------------------------------------------------
-
 /// Top-level flags struct for the `loki` command.
 ///
 /// If no subcommand is given, loki opens the TUI on [db_path].
@@ -90,10 +86,6 @@ const Loki = struct {
 
     pub const description = "Loki - simple TUI password manager";
 };
-
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

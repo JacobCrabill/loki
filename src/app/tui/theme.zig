@@ -9,6 +9,8 @@
 //! The reset sequences (OSC 110/111/104) tell the terminal to revert each
 //! setting to its user-configured default without needing to save/restore
 //! the original values explicitly.
+//!
+//! TODO: This is AI slop. Cleanup.
 
 const std = @import("std");
 

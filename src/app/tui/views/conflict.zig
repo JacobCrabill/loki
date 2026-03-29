@@ -1,3 +1,7 @@
+//! Conflict resolution view
+//!
+//! Allows the user to resolve conflicting entry changes between
+//! local and remote databases after a database sync.
 const std = @import("std");
 const zz = @import("zigzag");
 const loki = @import("loki");

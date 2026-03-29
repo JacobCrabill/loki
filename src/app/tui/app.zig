@@ -7,45 +7,15 @@ const common = @import("common.zig");
 const Context = @import("Context.zig");
 const views = @import("views.zig");
 
-// =============================================================================
-// Internal types
-// =============================================================================
-
+/// Available screens for our TUI.
+/// At any given time, only one screen is active.
 const Screen = union(enum) {
     unlock: views.Unlock,
     create: views.CreateScreen,
     main: views.MainScreen,
 };
 
-// =============================================================================
-// Views
-// =============================================================================
-
-/// Clip each line of `str` to `max_width` visual columns (ANSI-aware).
-/// Lines wider than `max_width` get truncated with "…" via zz.measure.truncate.
-fn clipLines(allocator: std.mem.Allocator, str: []const u8, max_width: usize) ![]const u8 {
-    var out: std.ArrayList(u8) = .{};
-    defer out.deinit(allocator);
-    var lines = std.mem.splitScalar(u8, str, '\n');
-    var first = true;
-    while (lines.next()) |line| {
-        if (!first) try out.append(allocator, '\n');
-        first = false;
-        if (zz.measure.width(line) > max_width) {
-            const clipped = try zz.measure.truncate(allocator, line, max_width);
-            defer allocator.free(clipped);
-            try out.appendSlice(allocator, clipped);
-        } else {
-            try out.appendSlice(allocator, line);
-        }
-    }
-    return out.toOwnedSlice(allocator);
-}
-
-// =============================================================================
-// Model
-// =============================================================================
-
+/// ZigZag Model Object
 pub const Model = struct {
     ctx: Context,
     screen: Screen,
@@ -148,10 +118,7 @@ pub const Model = struct {
     }
 };
 
-// =============================================================================
-// Entry point
-// =============================================================================
-
+/// Setup and run the ZigZag application Model
 pub fn run(allocator: std.mem.Allocator, db_path: []const u8) !void {
     // DEBUGGING
     var log_file = try std.fs.cwd().createFile("debug-log.txt", .{ .truncate = true });
