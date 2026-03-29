@@ -219,7 +219,7 @@ pub const CreateScreen = struct {
 
                     // Switch to the Main view.
                     self.deinit();
-                    self.ctx.log("Switching to main view", .{});
+                    self.ctx.log("Switching from create to main view", .{});
                     return .{ .msg = .{ .set_view = .main } };
                 },
                 .char => |ch| switch (ch) {

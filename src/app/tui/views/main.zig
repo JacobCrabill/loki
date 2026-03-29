@@ -304,8 +304,7 @@ pub const MainScreen = struct {
 
     /// Render a hint string of the form "key: action  key: action  …" with keys
     /// highlighted in cyan and action descriptions dimmed.  Pairs are separated by
-    /// two consecutive spaces; the key and action within each pair are separated by
-    /// ": ".
+    /// two consecutive spaces; the key and action within each pair are separated by ": ".
     fn renderHints(allocator: std.mem.Allocator, hints: []const u8) ![]const u8 {
         var buf: std.Io.Writer.Allocating = .init(allocator);
         defer buf.deinit();
