@@ -702,8 +702,8 @@ fn copyToClipboard(text: []const u8, allocator: std.mem.Allocator) void {
 
 fn labelStyle(selected: bool, modified: bool) zz.Style {
     var s = zz.Style{};
+    s = s.bold(true);
     if (selected) {
-        s = s.bold(true);
         s = s.fg(zz.Color.magenta());
     }
     if (modified) s = s.fg(zz.Color.yellow());

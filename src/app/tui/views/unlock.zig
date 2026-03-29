@@ -47,18 +47,21 @@ pub const Unlock = struct {
         }
         try w.writeAll("\n\nEnter: unlock   Esc: quit");
 
+        // Place in a larger, fixed-size box
+        const padded_content = try zz.place.place(allocator, common.loki_art_len, 5, .left, .middle, buf.written());
+
         var box_s = zz.Style{};
         box_s = box_s.borderAll(zz.Border.rounded);
         box_s = box_s.paddingAll(1);
-        const box = try box_s.render(allocator, buf.written());
+        const box = try box_s.render(allocator, padded_content);
 
         // Render the ASCII-art banner in our theme's blue, then stack it above
         // the dialog box (centered horizontally) with a blank line between them.
         var art_s = zz.Style{};
         art_s = art_s.fg(zz.Color.blue()).bold(true).width(common.loki_art_len); // width of ascii art
         const styled_art = try art_s.render(allocator, common.loki_art);
-        const combined = try zz.join.vertical(allocator, .center, &.{ styled_art, "", box });
 
+        const combined = try zz.join.vertical(allocator, .center, &.{ styled_art, "", box });
         return zz.place.place(allocator, term_width, term_height, .center, .middle, combined);
     }
 
