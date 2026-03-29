@@ -60,11 +60,11 @@ pub const Model = struct {
     }
 
     pub fn update(self: *Model, msg: common.Msg, ctx: *zz.Context) common.Cmd {
-        self.ctx.log("app update() with msg: {any}", .{msg});
+        // self.ctx.log("app update() with msg: {any}", .{msg});
         switch (msg) {
             .key => |k| return self.handleKey(k, ctx.persistent_allocator),
             .set_view => |sv| {
-                self.ctx.log("Changing view to: {t}", .{sv});
+                // self.ctx.log("Changing view to: {t}", .{sv});
                 switch (sv) {
                     .create => {
                         self.screen = .{ .create = views.CreateScreen.create(ctx.persistent_allocator, &self.ctx) };
@@ -81,7 +81,7 @@ pub const Model = struct {
                         self.screen = .{ .main = main };
                     },
                     else => {
-                        self.ctx.log("TODO: Unimplemented set_view: {t}", .{sv});
+                        // self.ctx.log("TODO: Unimplemented set_view: {t}", .{sv});
                         @panic("TODO: handle set_view in update()");
                     },
                 }
@@ -100,7 +100,7 @@ pub const Model = struct {
     }
 
     pub fn view(self: *Model, ctx: *const zz.Context) []const u8 {
-        self.ctx.log("entering view()", .{});
+        // self.ctx.log("entering view()", .{});
         return switch (self.screen) {
             .unlock => |*u| u.view(ctx.allocator, ctx.width, ctx.height),
             .create => |*c| c.view(ctx.allocator, ctx.width, ctx.height),
@@ -121,17 +121,20 @@ pub const Model = struct {
 /// Setup and run the ZigZag application Model
 pub fn run(allocator: std.mem.Allocator, db_path: []const u8) !void {
     // DEBUGGING
-    var log_file = try std.fs.cwd().createFile("debug-log.txt", .{ .truncate = true });
-    defer log_file.close();
-    var log_w = log_file.writer(&.{});
+    // var log_file = try std.fs.cwd().createFile("debug-log.txt", .{ .truncate = true });
+    // defer log_file.close();
+    // var log_w = log_file.writer(&.{});
 
     try theme.catppuccin_mocha.apply();
     defer theme.Theme.reset() catch {};
-    var program = try zz.Program(Model).init(allocator);
+    var program = try zz.Program(Model).initWithOptions(allocator, .{
+        .foreground = zz.Color.fromRgb(0xcd, 0xd6, 0xf4),
+        .background = zz.Color.fromRgb(0x1e, 0x1e, 0x2e),
+    });
     defer program.deinit();
     program.model = Model.create(.{
         .db_path = db_path,
-        .dbg_writer = &log_w.interface,
+        // .dbg_writer = &log_w.interface,
     });
     try program.run();
 }

@@ -82,7 +82,7 @@ pub const Unlock = struct {
 
                 // Switch to the Main view.
                 self.deinit();
-                self.ctx.log("Switching from login to main view", .{});
+                // self.ctx.log("Switching from login to main view", .{});
                 return .{ .msg = .{ .set_view = .main } };
             },
             else => self.input.handleKey(k),

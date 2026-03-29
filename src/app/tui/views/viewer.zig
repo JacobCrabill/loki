@@ -462,12 +462,12 @@ pub const Viewer = struct {
                         break :blk &hex_buf;
                     } else "(genesis)";
                     const sel = self.field_cursor == .parent;
+                    try w.writeByte('\n');
                     try w.writeAll(try labelStyle(sel, false).render(allocator, "Parent: "));
                     var vs = zz.Style{};
                     vs = vs.italic(true);
                     vs = vs.dim(true);
                     try w.writeAll(try vs.render(allocator, parent_str));
-                    try w.writeByte('\n');
                 }
             }
         } else {

@@ -12,8 +12,8 @@ db_path: []const u8 = "",
 /// TODO: ?* ?
 db: ?Database = null,
 
-/// DEBUGGING
-dbg_writer: *std.Io.Writer,
+// /// DEBUGGING
+// dbg_writer: *std.Io.Writer,
 
 pub fn getDb(self: *Self) !*Database {
     return &(self.db orelse return error.DatabaseNotOpen);
@@ -32,7 +32,7 @@ pub fn deinitDb(self: *Self) void {
     self.db = null;
 }
 
-/// DEBUGGING
-pub fn log(self: *const Self, comptime fmt: []const u8, args: anytype) void {
-    self.dbg_writer.print(fmt ++ "\n", args) catch {};
-}
+// /// DEBUGGING
+// pub fn log(self: *const Self, comptime fmt: []const u8, args: anytype) void {
+//     self.dbg_writer.print(fmt ++ "\n", args) catch {};
+// }
