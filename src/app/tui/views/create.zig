@@ -53,6 +53,7 @@ pub const CreateScreen = struct {
         term_width: u16,
         term_height: u16,
     ) ![]const u8 {
+        self.ctx.log("Entering create view()", .{});
         var buf: std.Io.Writer.Allocating = .init(allocator);
         defer buf.deinit();
         const w = &buf.writer;
@@ -203,6 +204,7 @@ pub const CreateScreen = struct {
                         self.error_msg = "Failed to create database.";
                         self.confirm_input.focus();
                         self.stage = .confirm;
+                        self.ctx.log("failed to create database", .{});
                         return .none;
                     };
                     db.save() catch {
@@ -210,12 +212,14 @@ pub const CreateScreen = struct {
                         self.error_msg = "Failed to initialise database.";
                         self.confirm_input.focus();
                         self.stage = .confirm;
+                        self.ctx.log("failed to initialise database", .{});
                         return .none;
                     };
                     self.ctx.db = db;
 
                     // Switch to the Main view.
                     self.deinit();
+                    self.ctx.log("Switching to main view", .{});
                     return .{ .msg = .{ .set_view = .main } };
                 },
                 .char => |ch| switch (ch) {

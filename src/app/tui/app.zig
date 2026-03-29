@@ -440,16 +440,31 @@ pub const Model = struct {
     }
 
     pub fn update(self: *Model, msg: common.Msg, ctx: *zz.Context) common.Cmd {
+        self.ctx.log("app update() with msg: {any}", .{msg});
         switch (msg) {
             .key => |k| return self.handleKey(k, ctx.persistent_allocator),
-            .set_view => |sv| switch (sv) {
-                .create => {
-                    self.screen = .{ .create = views.CreateScreen.create(ctx.persistent_allocator, &self.ctx) };
-                },
-                .unlock => |why| {
-                    self.screen = .{ .unlock = makeUnlockScreen(ctx.persistent_allocator, why) };
-                },
-                else => @panic("TODO: handle set_view in update()"),
+            .set_view => |sv| {
+                self.ctx.log("Changing view to: {t}", .{sv});
+                switch (sv) {
+                    .create => {
+                        self.screen = .{ .create = views.CreateScreen.create(ctx.persistent_allocator, &self.ctx) };
+                    },
+                    .unlock => |why| {
+                        self.screen = .{ .unlock = makeUnlockScreen(ctx.persistent_allocator, why) };
+                    },
+                    .main => {
+                        const main = makeMainScreen(ctx.persistent_allocator, &self.ctx) catch {
+                            self.ctx.deinitDb();
+                            self.screen = .{ .unlock = makeUnlockScreen(ctx.persistent_allocator, "Failed to load entries.") };
+                            return .none;
+                        };
+                        self.screen = .{ .main = main };
+                    },
+                    else => {
+                        self.ctx.log("TODO: Unimplemented set_view: {t}", .{sv});
+                        @panic("TODO: handle set_view in update()");
+                    },
+                }
             },
         }
         return .none;
@@ -616,6 +631,7 @@ pub const Model = struct {
 
     pub fn view(self: *const Model, ctx: *const zz.Context) []const u8 {
         // Use @constCast so browser.view() can set list.height for scrolling.
+        self.ctx.log("entering view()", .{});
         const self_mut = @constCast(self);
         return switch (self_mut.screen) {
             .unlock => |*u| viewUnlock(u, ctx.allocator, ctx.width, ctx.height),
@@ -639,10 +655,18 @@ pub const Model = struct {
 // =============================================================================
 
 pub fn run(allocator: std.mem.Allocator, db_path: []const u8) !void {
+    // DEBUGGING
+    var log_file = try std.fs.cwd().createFile("debug-log.txt", .{ .truncate = true });
+    defer log_file.close();
+    var log_w = log_file.writer(&.{});
+
     try theme.catppuccin_mocha.apply();
     defer theme.Theme.reset() catch {};
     var program = try zz.Program(Model).init(allocator);
     defer program.deinit();
-    program.model = Model.create(.{ .db_path = db_path });
+    program.model = Model.create(.{
+        .db_path = db_path,
+        .dbg_writer = &log_w.interface,
+    });
     try program.run();
 }

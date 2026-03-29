@@ -1,3 +1,4 @@
+const std = @import("std");
 const loki = @import("loki");
 
 const Database = loki.Database;
@@ -10,6 +11,9 @@ db_path: []const u8 = "",
 /// The global Database instance
 /// TODO: ?* ?
 db: ?Database = null,
+
+/// DEBUGGING
+dbg_writer: *std.Io.Writer,
 
 pub fn getDb(self: *Self) !*Database {
     return &(self.db orelse return error.DatabaseNotOpen);
@@ -26,4 +30,9 @@ pub fn deinitDb(self: *Self) void {
         db.deinit();
     }
     self.db = null;
+}
+
+/// DEBUGGING
+pub fn log(self: *const Self, comptime fmt: []const u8, args: anytype) void {
+    self.dbg_writer.print(fmt ++ "\n", args) catch {};
 }
