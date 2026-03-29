@@ -4,6 +4,8 @@ pub const create = @import("views/create.zig");
 pub const history = @import("views/history.zig");
 pub const viewer = @import("views/viewer.zig");
 
+pub const main_screen = @import("views/main.zig");
+
 // pub const login = @import("views/login.zig");
 // pub const password = @import("views/password.zig");
 
@@ -12,3 +14,4 @@ pub const CreateScreen = create.CreateScreen;
 pub const ConflictView = conflict.ConflictView;
 pub const HistoryView = history.HistoryView;
 pub const Viewer = viewer.Viewer;
+pub const MainScreen = main_screen.MainScreen;
