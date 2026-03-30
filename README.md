@@ -52,11 +52,17 @@ The TUI interface is fairly bare-bones, and was developed using the
 database, add and "move" existing entries, view the complete history of an entry, generate random
 passwords, and copy data to the clipboard for easy logins.
 
+![Create a new database](docs/images/create-new.png)
+
+![Unlock screen](docs/images/unlock.png)
+
 ![Editing an entry](docs/images/edit-entry.png)
 
 ![Generate a password](docs/images/generate-password.png)
 
 ![View an entry's history](docs/images/history-view.png)
+
+![Search for entries](docs/images/search.png)
 
 ## Android Application
 
