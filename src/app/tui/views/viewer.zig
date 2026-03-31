@@ -5,16 +5,12 @@ const loki = @import("loki");
 const Entry = loki.Entry;
 const Generator = @import("generator.zig").Generator;
 
-// Field indices: 0=path, 1=title, 2=description, 3=url, 4=username, 5=password, 6=notes
-// Field 7=parent is read-only.
-const EDITABLE = 7;
-const FIELD_COUNT = 8;
-
 const Mode = enum { view, edit };
 
 pub const Signal = enum { none, save, show_history, quit };
 
 const Fields = enum(u8) {
+    // Editable fields
     path,
     title,
     description,
@@ -22,7 +18,9 @@ const Fields = enum(u8) {
     username,
     password,
     notes,
+    // Non-editable fields
     parent,
+    // End of fields
     field_max,
     _, // We leave the enum open to allow casting from integers
 };
@@ -364,8 +362,7 @@ pub const Viewer = struct {
             switch (key.key) {
                 .escape => {
                     self.checkNotesModified();
-                    self.mode = .view;
-                    self.blurAll();
+                    self.leaveEditMode();
                 },
                 else => self.notes_area.handleKey(key),
             }
@@ -498,7 +495,6 @@ pub const Viewer = struct {
         content_w: u16,
     ) !void {
         const name = getFieldName(field);
-        const display_val = self.getFieldValue(field, allocator);
         const modified = self.fieldModified(field);
         const selected = self.field_cursor == field;
         const editing_this = editing and selected;
@@ -524,6 +520,7 @@ pub const Viewer = struct {
             if (field == .password and !self.show_password) {
                 // Masked password: fill with '*', capped to available line width.
                 const first_w = if (cw > lw) cw - lw else 0;
+                const display_val = self.getFieldValue(field, allocator);
                 const star_count = @min(display_val.len, first_w);
                 const hidden = try allocator.alloc(u8, star_count);
                 @memset(hidden, '*');
@@ -538,6 +535,7 @@ pub const Viewer = struct {
                 // All other fields: soft-wrap long values so they never overflow
                 // the pane width.
                 const first_w = if (cw > lw) cw - lw else 0;
+                const display_val = self.getFieldValue(field, allocator);
                 const wrapped = try wrapText(allocator, display_val, first_w, cw);
                 try writer.writeAll(try vs.render(allocator, wrapped));
             }
