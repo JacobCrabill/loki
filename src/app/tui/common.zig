@@ -2,8 +2,6 @@ const std = @import("std");
 const loki = @import("loki");
 const zz = @import("zigzag");
 
-const IndexEntry = loki.store.index.IndexEntry;
-
 /// ASCII-art banner rendered on login.
 pub const loki_art =
     \\ __         _____      __  __     ______
@@ -48,7 +46,7 @@ pub fn detectDbState(db_path: []const u8) DbState {
     return .encrypted;
 }
 
-pub fn findHeadHash(entries: []const IndexEntry, entry_id: [20]u8) ?[20]u8 {
+pub fn findHeadHash(entries: []const loki.store.index.IndexEntry, entry_id: [20]u8) ?[20]u8 {
     for (entries) |ie| {
         if (std.mem.eql(u8, &ie.entry_id, &entry_id)) return ie.head_hash;
     }

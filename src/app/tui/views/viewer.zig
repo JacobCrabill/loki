@@ -453,17 +453,21 @@ pub const Viewer = struct {
             // Parent hash (read-only, italic/dim).
             if (!self.is_new) {
                 if (self.entry) |ee| {
+                    const selected = self.field_cursor == .parent;
+
                     var hex_buf: [40]u8 = undefined;
                     const parent_str: []const u8 = if (ee.parent_hash) |h| blk: {
                         hex_buf = std.fmt.bytesToHex(h, .lower);
                         break :blk &hex_buf;
                     } else "(genesis)";
-                    const sel = self.field_cursor == .parent;
+
                     try w.writeByte('\n');
-                    try w.writeAll(try labelStyle(sel, false).render(allocator, "Parent: "));
+                    try w.writeAll(try labelStyle(selected, false).render(allocator, "Parent: "));
+
                     var vs = zz.Style{};
                     vs = vs.italic(true);
                     vs = vs.dim(true);
+
                     try w.writeAll(try vs.render(allocator, parent_str));
                 }
             }
@@ -483,6 +487,7 @@ pub const Viewer = struct {
         }
         box_s = box_s.paddingLeft(1);
         box_s = box_s.width(content_w);
+
         return box_s.render(allocator, content_padded);
     }
 

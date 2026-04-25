@@ -19,8 +19,7 @@ Loki is intended to be a simplified replacement for KeePassXC users just wanting
 passwords, URLs, and notes in a secure manner, and sync them reliably between all of their devices,
 with no data lost in the process, _ever_.
 
-Loki is still under development, but is already capable of doing all of the above. The last feature
-needed to reach MVP status is a merge-conflict resolution view.
+Loki is essentially feature-complete, with only minor UX improvements planned for the future.
 
 ## Features
 
