@@ -33,7 +33,7 @@ Loki is essentially feature-complete, with only minor UX improvements planned fo
 - Version tracking of all changes
   - See past versions of an entry
   - No data is ever truly lost - roll back to a previous version of an entry at any time
-- Automatic fecthing and syncing of a "database" to/from a remote server
+- Automatic fetching and syncing of a "database" to/from a remote server
   - Git-style push/pull synchronization
   - Ability for the user to interactively resolve vesrion conflicts
 
